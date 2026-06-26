@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LearnCode</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      background: #fff;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      color: #e94560;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .header-actions button {
+      background: #f0f0f0;
+      color: #333;
+      border: 1px solid #ddd;
+      padding: 6px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .header-actions button:hover {
+      background: #e8e8e8;
+    }
+
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      width: 220px;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar h3 {
+      font-size: 13px;
+      color: #999;
+      margin-bottom: 8px;
+    }
+
+    .sidebar .new-btn {
+      background: #e94560;
+      color: #fff;
+      border: none;
+      padding: 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    .sidebar .new-btn:hover {
+      background: #d03050;
+    }
+
+    .session-item {
+      padding: 8px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      margin-bottom: 4px;
+      color: #555;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+
+    .session-item:hover {
+      background: #f0f0f0;
+    }
+
+    .session-item.active {
+      background: #e94560;
+      color: #fff;
+    }
+
+    .session-item .title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-item .actions {
+      display: none;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    .session-item:hover .actions {
+      display: flex;
+    }
+
+    .session-item .actions button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 2px 4px;
+      border-radius: 2px;
+      color: #999;
+    }
+
+    .session-item.active .actions button {
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .session-item .actions button:hover {
+      background: rgba(0, 0, 0, 0.1);
+      color: #333;
+    }
+
+    .session-item.active .actions button:hover {
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+
+    .chat-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    .message {
+      margin-bottom: 16px;
+      display: flex;
+      gap: 10px;
+    }
+
+    .message.user {
+      flex-direction: row-reverse;
+    }
+
+    .message .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+      color: #fff;
+    }
+
+    .message.assistant .avatar {
+      background: #e94560;
+    }
+
+    .message.user .avatar {
+      background: #667eea;
+    }
+
+    .message .bubble {
+      max-width: 75%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: break-word;
+    }
+
+    .message.assistant .bubble {
+      background: #fff;
+      border: 1px solid #e8e8e8;
+      color: #333;
+    }
+
+    .message.user .bubble {
+      background: #667eea;
+      color: #fff;
+    }
+
+    .message.tool .bubble {
+      background: #fafafa;
+      border: 1px solid #e0e0e0;
+      font-size: 12px;
+      color: #888;
+    }
+
+    .message.error .bubble {
+      background: #fff5f5;
+      border: 1px solid #fcc;
+      color: #c33;
+    }
+
+    .message.compact .bubble {
+      background: #f5faf5;
+      border: 1px solid #c8e6c9;
+      font-size: 12px;
+      color: #2e7d32;
+    }
+
+    .input-area {
+      padding: 16px 20px;
+      background: #fff;
+      border-top: 1px solid #e0e0e0;
+      display: flex;
+      gap: 10px;
+    }
+
+    .input-area textarea {
+      flex: 1;
+      background: #f5f5f5;
+      color: #333;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 14px;
+      resize: none;
+      font-family: inherit;
+      min-height: 44px;
+      max-height: 150px;
+      outline: none;
+    }
+
+    .input-area textarea:focus {
+      border-color: #e94560;
+    }
+
+    .input-area button {
+      background: #e94560;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .input-area button:hover {
+      background: #d03050;
+    }
+
+    .input-area button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .status {
+      padding: 6px 20px;
+      font-size: 12px;
+      color: #999;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #fafafa;
+      border-top: 1px solid #eee;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot.connected {
+      background: #4caf50;
+    }
+
+    .dot.disconnected {
+      background: #ccc;
+    }
+
+    .dot.processing {
+      background: #ff9800;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.4;
+      }
+    }
+
+    .rename-input {
+      border: 1px solid #e94560;
+      border-radius: 2px;
+      padding: 2px 4px;
+      font-size: 13px;
+      width: 100%;
+      outline: none;
+      font-family: inherit;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="header">
+    <h1>LearnCode</h1>
+    <div class="header-actions">
+      <button onclick="compactSession()">Compact</button>
+    </div>
+  </div>
+  <div class="main">
+    <div class="sidebar">
+      <button class="new-btn" onclick="newSession()">+ New Session</button>
+      <h3>Sessions</h3>
+      <div id="session-list"></div>
+    </div>
+    <div class="chat-area">
+      <div class="messages" id="messages"></div>
+      <div class="status" id="status">
+        <span class="dot disconnected"></span><span id="status-text">Disconnected</span>
+      </div>
+      <div class="input-area">
+        <textarea id="user-input" placeholder="Type a message..." rows="1" onkeydown="onKeyDown(event)"></textarea>
+        <button id="send-btn" onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let sessionId = null;
+    let processing = false;
+    let editingId = null;
+
+    function connect() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}/ws`);
+      ws.onopen = () => {
+        setStatus('connected', 'Connected');
+        listSessions();
+        updateSendButton();
+      };
+      ws.onclose = () => { setStatus('disconnected', 'Disconnected - reconnecting...'); setTimeout(connect, 2000); };
+      ws.onerror = () => setStatus('disconnected', 'Connection error');
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        handleEvent(msg.type, msg.data);
+      };
+    }
+
+    function setStatus(cls, text) {
+      document.getElementById('status').innerHTML = '<span class="dot ' + cls + '"></span><span id="status-text">' + text + '</span>';
+    }
+
+    function handleEvent(type, data) {
+      switch (type) {
+        case 'step':
+          if (data.type === 'tool_calls' && data.calls) {
+            for (const c of data.calls) {
+              addMessage('tool', 'Tool: ' + c.tool_name + '\n' + JSON.stringify(c.input, null, 2));
+            }
+          }
+          if (data.content) {
+            addMessage('assistant', data.content);
+          }
+          break;
+        case 'done':
+          processing = false;
+          updateSendButton();
+          if (data.session_id) {
+            sessionId = data.session_id;
+            autoNameSession();
+            listSessions();
+          }
+          setStatus('connected', 'Ready');
+          break;
+        case 'error':
+          addMessage('error', 'Error: ' + data);
+          processing = false;
+          updateSendButton();
+          setStatus('connected', 'Error');
+          break;
+        case 'sessions':
+          renderSessions(data);
+          break;
+        case 'session_loaded':
+          document.getElementById('messages').innerHTML = '';
+          if (data.messages) {
+            for (const m of data.messages) {
+              if (m.role === 'user') {
+                addMessage('user', m.content);
+              } else if (m.role === 'assistant' || m.role === 'assistant_progress') {
+                if (m.content) addMessage('assistant', m.content);
+              } else if (m.role === 'assistant_tool_call') {
+                addMessage('tool', 'Tool: ' + (m.tool_name || '') + '\n' + JSON.stringify(m.input || {}, null, 2));
+              } else if (m.role === 'tool_result') {
+                addMessage('tool', (m.is_error ? '[Error] ' : '') + (m.content || ''));
+              } else if (m.role === 'system') {
+                // skip system prompt
+              } else if (m.content) {
+                addMessage('assistant', m.content);
+              }
+            }
+          }
+          addMessage('compact', 'Loaded: ' + data.title + ' (' + data.message_count + ' messages)');
+          listSessions();
+          break;
+        case 'session_created':
+          sessionId = data.id;
+          document.getElementById('messages').innerHTML = '';
+          addMessage('compact', 'New session: ' + data.title);
+          listSessions();
+          break;
+        case 'session_forked':
+          sessionId = data.id;
+          ws.send(JSON.stringify({ action: 'load_session', session_id: data.id }));
+          listSessions();
+          break;
+        case 'session_renamed':
+          listSessions();
+          break;
+        case 'session_deleted':
+          if (data.id === sessionId) {
+            sessionId = null;
+            document.getElementById('messages').innerHTML = '';
+          }
+          listSessions();
+          break;
+        case 'compact':
+          addMessage('compact', 'Context compacted: ' + (data.tokens_before || '?') + ' -> ' + (data.tokens_after || '?') + ' tokens');
+          break;
+      }
+    }
+
+    function addMessage(role, content) {
+      const container = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = 'message ' + role;
+      let avatar = 'AI';
+      if (role === 'user') avatar = 'U';
+      else if (role === 'tool') avatar = 'T';
+      else if (role === 'error') avatar = '!';
+      else if (role === 'compact') avatar = 'C';
+      div.innerHTML = '<div class="avatar">' + avatar + '</div><div class="bubble">' + escapeHtml(content) + '</div>';
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('user-input');
+      const text = input.value.trim();
+      if (!text || processing) return;
+      addMessage('user', text);
+      input.value = '';
+      processing = true;
+      updateSendButton();
+      setStatus('processing', 'Processing...');
+      ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId }));
+    }
+
+    function onKeyDown(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    }
+
+    function updateSendButton() {
+      document.getElementById('send-btn').disabled = processing;
+    }
+
+    function compactSession() {
+      if (!ws || !sessionId) return;
+      ws.send(JSON.stringify({ action: 'compact', session_id: sessionId }));
+    }
+
+    function newSession() {
+      if (!ws) return;
+      ws.send(JSON.stringify({ action: 'new_session' }));
+    }
+
+    function listSessions() {
+      ws.send(JSON.stringify({ action: 'list_sessions' }));
+    }
+
+    function selectSession(id) {
+      if (editingId) return;
+      sessionId = id;
+      document.getElementById('messages').innerHTML = '';
+      ws.send(JSON.stringify({ action: 'load_session', session_id: id }));
+      listSessions();
+    }
+
+    function startRename(id, e) {
+      e.stopPropagation();
+      editingId = id;
+      const item = document.querySelector('.session-item[data-id="' + id + '"]');
+      if (!item) return;
+      const titleEl = item.querySelector('.title');
+      const oldTitle = titleEl.textContent;
+      const input = document.createElement('input');
+      input.className = 'rename-input';
+      input.value = oldTitle;
+      input.onblur = function () { finishRename(id, input.value, oldTitle); };
+      input.onkeydown = function (ev) {
+        if (ev.key === 'Enter') { finishRename(id, input.value, oldTitle); }
+        if (ev.key === 'Escape') { finishRename(id, oldTitle, oldTitle); }
+      };
+      titleEl.innerHTML = '';
+      titleEl.appendChild(input);
+      input.focus();
+      input.select();
+    }
+
+    function finishRename(id, newTitle, oldTitle) {
+      editingId = null;
+      if (newTitle.trim() && newTitle.trim() !== oldTitle) {
+        ws.send(JSON.stringify({ action: 'rename_session', session_id: id, title: newTitle.trim() }));
+      } else {
+        listSessions();
+      }
+    }
+
+    function autoNameSession() {
+      if (sessionId) {
+        ws.send(JSON.stringify({ action: 'auto_name_session', session_id: sessionId }));
+      }
+    }
+
+    function deleteSession(id, e) {
+      e.stopPropagation();
+      if (!confirm('Delete this session?')) return;
+      ws.send(JSON.stringify({ action: 'delete_session', session_id: id }));
+    }
+
+    function forkSession(id, e) {
+      e.stopPropagation();
+      ws.send(JSON.stringify({ action: 'fork_session', session_id: id }));
+    }
+
+    function renderSessions(sessions) {
+      const container = document.getElementById('session-list');
+      container.innerHTML = sessions.map(function (s) {
+        return '<div class="session-item' + (s.id === sessionId ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
+          '<span class="title">' + escapeHtml(s.title || 'Untitled') + '</span>' +
+          '<span class="actions">' +
+          '<button title="Rename" onclick="startRename(\'' + s.id + '\', event)">&#9998;</button>' +
+          '<button title="Auto-name" onclick="event.stopPropagation();ws.send(JSON.stringify({action:\'auto_name_session\',session_id:\'' + s.id + '\'}))">AI</button>' +
+          '<button title="Fork" onclick="forkSession(\'' + s.id + '\', event)">F</button>' +
+          '<button title="Delete" onclick="deleteSession(\'' + s.id + '\', event)">&#10005;</button>' +
+          '</span></div>';
+      }).join('');
+    }
+
+    connect();
+  </script>
+</body>
+
+</html>
