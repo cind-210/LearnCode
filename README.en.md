@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="asset/learncode.png" alt="LearnCode" width="160">
+  <img src="asset/learncode.png" alt="LearnCode" width="300">
 </p>
 
 LearnCode is a small Python coding-agent project with a web frontend.
@@ -85,5 +85,6 @@ The Compact button summarizes earlier context in the current session so later mo
 
 ## Acknowledgements
 
-[LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode) 
+[LiuMengxuan04/MiniCode](https://github.com/LiuMengxuan04/MiniCode)   
+
 [QUSETIONS/MiniCode-Python](https://github.com/QUSETIONS/MiniCode-Python).
