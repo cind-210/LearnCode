@@ -1,82 +1,93 @@
-# 前端
+# 前端页面流程
 
-前端是 `static/index.html`。
+前端只有 `static/index.html` 一个文件，里面同时写 HTML、CSS 和 JavaScript。它不直接请求模型，只和后端 WebSocket 通信。完整 WebSocket action 和 event 结构看 [api.md](api.md)。
 
-它是一个单文件 HTML/CSS/JavaScript 应用，由 FastAPI 静态文件服务提供。
+## 页面打开
 
-## 布局
+页面加载后会连接 `/ws`。连接成功后，前端会：
 
-- Header：应用标题和 Compact 按钮。
-- Sidebar：New Session 和会话列表。
-- Chat area：消息区。
-- Status bar：连接/处理状态。
-- Textarea input 和 Send 按钮。
+1. 把底部状态改成 Connected。
+2. 启用 Send 按钮。
+3. 发送 `list_sessions`，要求后端刷新左侧 session 列表。
 
-## WebSocket
+后端连接建立时也会主动发 workspace 和 session 列表，所以正常情况下不需要等用户先发消息才显示 session。
 
-浏览器连接：
+## 用户发送消息
 
-```javascript
-new WebSocket(`${protocol}//${location.host}/ws`)
-```
+用户点 Send 后，前端先更新页面，再把 `chat` 发给后端。
 
-连接打开时：
+发送前会：
 
-- 状态变为 connected
-- 请求会话列表
-- 更新发送按钮状态
+1. 读取输入框。
+2. 把用户消息显示到聊天区。
+3. 清空输入框。
+4. 把 `processing` 设为 `true`。
+5. 禁用 Send 按钮。
 
-连接关闭时：
+如果当前没有 session，后端会创建新 session，再返回给前端。
 
-- 状态变为 disconnected
-- 2 秒后重连
+前端这里先显示用户消息，只改变浏览器页面；真正写入 session 文件发生在后端发送 `done` 前。
 
-## 发送聊天
+## WebSocket 事件更新页面
 
-`sendMessage()`：
+所有 WebSocket 消息都会进入 `handleEvent(type, data)`。前端主要处理这些事件：
 
-1. 读取 textarea。
-2. 本地添加一个 user message bubble。
-3. 设置 processing 状态。
-4. 发送：
+- `workspace`：更新顶部 workspace 文本。
+- `sessions`：重新渲染左侧列表。
+- `session_created`：记录当前 session id；如果正在自动命名，标题旁边显示转圈。
+- `session_loaded`：清空聊天区，把历史消息重新画出来。
+- `session_renamed`：更新左侧标题，取消命名转圈。
+- `session_deleted`：删除左侧对应项。
+- `session_forked`：切到复制出来的新 session。
+- `step`：显示模型中间输出、工具调用或最终回答。
+- `done`：解除发送按钮禁用，必要时触发自动命名。
+- `error`：显示错误，并解除发送按钮禁用。
+- `compact`：显示手动压缩结果。
 
-```json
-{"action":"chat","message":"...","session_id":"..."}
-```
+这些事件只改变浏览器页面状态。session 文件怎么写由后端决定，看 [sessions.md](sessions.md)。
 
-## 会话 UI 操作
+## 显示普通回答
 
-- `newSession()` 发送 `new_session`。
-- `selectSession(id)` 发送 `load_session`。
-- `startRename()` 内联编辑标题。
-- `finishRename()` 发送 `rename_session`。
-- `autoNameSession()` 发送 `auto_name_session`。
-- `forkSession()` 发送 `fork_session`。
-- `deleteSession()` 发送 `delete_session`。
-- `compactSession()` 发送 `compact`。
+后端发来普通 assistant step 时，前端把它显示成一条 assistant 消息。
 
-## 消息渲染
+如果聊天区里已经有本次用户输入对应的 agent loop 容器，最终回答会作为最后结果显示，中间过程折叠起来，用户可以再展开。
 
-消息由 `addMessage(role, content)` 渲染，支持角色：
+## 显示工具调用
 
-- `user`
-- `assistant`
-- `tool`
-- `error`
-- `compact`
+后端发来工具调用 step 时，前端会创建或更新一个 agent loop 容器。
 
-加载会话时，后端 roles 会转换为：
+这个容器里按顺序显示：
 
-- `user` -> user bubble
-- `assistant` / `assistant_progress` -> assistant bubble
-- `assistant_tool_call` -> tool bubble
-- `tool_result` -> tool bubble
-- `system` -> 跳过
+1. 模型在工具调用前写出的文本。
+2. 每个工具调用块。
 
-## 当前限制
+每个工具调用单独显示成一块，显示工具名和输入 JSON。工具返回内容不会作为单独块完整显示；它会进入后端消息列表，再被模型用于下一次回答。
+
+如果一次用户输入里有多轮工具调用，本次用户输入产生的中间文本和工具块会继续追加到同一个容器。内容增长时会自动滚动到底部。
+
+## Session 列表
+
+左侧 session 列表由后端发来的 `sessions` 事件渲染。
+
+每个 session 显示：
+
+- 标题。
+- 手动重命名按钮。
+- AI 自动命名按钮。
+- Fork 按钮。
+- Delete 按钮。
+
+如果某个 session 正在自动命名，标题旁边显示转圈。
+
+## 自动命名
+
+新 session 第一次 `done` 后，如果后端要求自动命名，前端会发送 `auto_name_session`。
+
+命名前，左侧标题仍显示 `New Session`，旁边显示转圈。后端返回改名事件后，前端替换成新标题。
+
+## 当前边界
 
 - 没有 Markdown 渲染。
-- 没有 diff review UI。
-- 没有权限审批弹窗。
-- 没有 token-by-token 流式显示；它渲染服务端 step 消息。
-- 工具调用和工具结果只是纯文本块。
+- 没有代码 diff 专用视图。
+- 没有工具权限审批弹窗。
+- 不是 token-by-token 流式输出，而是按后端 `step` 事件更新。

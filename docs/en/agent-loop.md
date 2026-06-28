@@ -1,6 +1,6 @@
 # Agent Loop
 
-The core loop is implemented in `src/agent_loop.py`.
+The core loop is implemented in `src/loop/runner.py`.
 
 ## Main Entry
 

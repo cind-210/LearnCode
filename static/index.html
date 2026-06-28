@@ -35,6 +35,15 @@
       color: #e94560;
     }
 
+    .workspace-label {
+      color: #777;
+      font-size: 12px;
+      max-width: 60vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .header-actions {
       display: flex;
       gap: 10px;
@@ -118,6 +127,21 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .session-item .naming-spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(153, 153, 153, 0.35);
+      border-top-color: #999;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .session-item.active .naming-spinner {
+      border-color: rgba(255, 255, 255, 0.35);
+      border-top-color: #fff;
     }
 
     .session-item .actions {
@@ -224,6 +248,80 @@
       color: #888;
     }
 
+    .message.loop .bubble {
+      background: #fafafa;
+      border: 1px solid #e0e0e0;
+      color: #666;
+      font-size: 12px;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .loop-container-header {
+      cursor: pointer;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      user-select: none;
+    }
+
+    .loop-container-title {
+      font-weight: 600;
+      color: #555;
+    }
+
+    .loop-container-count {
+      color: #999;
+      font-size: 11px;
+    }
+
+    .loop-container-body {
+      border-top: 1px solid #e8e8e8;
+      padding: 8px 12px;
+      max-height: 360px;
+      overflow-y: auto;
+    }
+
+    .loop-container.collapsed .loop-container-body {
+      display: none;
+    }
+
+    .loop-event {
+      border: 1px solid #e4e4e4;
+      border-radius: 6px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .loop-event + .loop-event {
+      margin-top: 8px;
+    }
+
+    .loop-event-label {
+      padding: 6px 8px;
+      border-bottom: 1px solid #eeeeee;
+      font-weight: 600;
+      color: #555;
+      background: #f7f7f7;
+    }
+
+    .loop-event.assistant .loop-event-label {
+      color: #b02a45;
+    }
+
+    .loop-event.tool .loop-event-label {
+      color: #7a5b00;
+    }
+
+    .loop-event-body {
+      padding: 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: #555;
+    }
+
     .message.error .bubble {
       background: #fff5f5;
       border: 1px solid #fcc;
@@ -327,6 +425,12 @@
       }
     }
 
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
     .rename-input {
       border: 1px solid #e94560;
       border-radius: 2px;
@@ -341,7 +445,10 @@
 
 <body>
   <div class="header">
-    <h1>LearnCode</h1>
+    <div>
+      <h1>LearnCode</h1>
+      <div class="workspace-label" id="workspace-label">Workspace: loading...</div>
+    </div>
     <div class="header-actions">
       <button onclick="compactSession()">Compact</button>
     </div>
@@ -369,6 +476,8 @@
     let sessionId = null;
     let processing = false;
     let editingId = null;
+    let currentLoopContainer = null;
+    const namingSessions = new Set();
 
     function connect() {
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -378,8 +487,17 @@
         listSessions();
         updateSendButton();
       };
-      ws.onclose = () => { setStatus('disconnected', 'Disconnected - reconnecting...'); setTimeout(connect, 2000); };
-      ws.onerror = () => setStatus('disconnected', 'Connection error');
+      ws.onclose = () => {
+        processing = false;
+        setStatus('disconnected', 'Disconnected - reconnecting...');
+        updateSendButton();
+        setTimeout(connect, 2000);
+      };
+      ws.onerror = () => {
+        processing = false;
+        setStatus('disconnected', 'Connection error');
+        updateSendButton();
+      };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         handleEvent(msg.type, msg.data);
@@ -393,21 +511,33 @@
     function handleEvent(type, data) {
       switch (type) {
         case 'step':
-          if (data.type === 'tool_calls' && data.calls) {
-            for (const c of data.calls) {
-              addMessage('tool', 'Tool: ' + c.tool_name + '\n' + JSON.stringify(c.input, null, 2));
+          if (data.type === 'tool_calls') {
+            if (data.content) {
+              appendLoopEvent('Assistant', data.content, 'assistant');
             }
-          }
-          if (data.content) {
+            if (data.calls) {
+              for (const c of data.calls) {
+                appendLoopEvent('Tool: ' + c.tool_name, JSON.stringify(c.input, null, 2), 'tool');
+              }
+            }
+          } else if (data.type === 'assistant' && data.kind === 'progress') {
+            if (data.content) {
+              appendLoopEvent('Assistant', data.content, 'assistant');
+            }
+          } else if (data.type === 'assistant' && data.content) {
+            collapseLoopContainer();
             addMessage('assistant', data.content);
           }
           break;
         case 'done':
           processing = false;
+          collapseLoopContainer();
           updateSendButton();
           if (data.session_id) {
             sessionId = data.session_id;
-            autoNameSession();
+            if (data.auto_name) {
+              autoNameSession(data.session_id);
+            }
             listSessions();
           }
           setStatus('connected', 'Ready');
@@ -415,14 +545,19 @@
         case 'error':
           addMessage('error', 'Error: ' + data);
           processing = false;
+          collapseLoopContainer();
           updateSendButton();
           setStatus('connected', 'Error');
           break;
         case 'sessions':
           renderSessions(data);
           break;
+        case 'workspace':
+          document.getElementById('workspace-label').textContent = 'Workspace: ' + data.workspace;
+          break;
         case 'session_loaded':
           document.getElementById('messages').innerHTML = '';
+          currentLoopContainer = null;
           if (data.messages) {
             for (const m of data.messages) {
               if (m.role === 'user') {
@@ -445,8 +580,14 @@
           break;
         case 'session_created':
           sessionId = data.id;
-          document.getElementById('messages').innerHTML = '';
-          addMessage('compact', 'New session: ' + data.title);
+          if (data.naming) {
+            namingSessions.add(data.id);
+          }
+          if (!data.created_from_chat) {
+            document.getElementById('messages').innerHTML = '';
+            currentLoopContainer = null;
+            addMessage('compact', 'New session: ' + data.title);
+          }
           listSessions();
           break;
         case 'session_forked':
@@ -455,9 +596,11 @@
           listSessions();
           break;
         case 'session_renamed':
+          namingSessions.delete(data.id);
           listSessions();
           break;
         case 'session_deleted':
+          namingSessions.delete(data.id);
           if (data.id === sessionId) {
             sessionId = null;
             document.getElementById('messages').innerHTML = '';
@@ -484,6 +627,63 @@
       container.scrollTop = container.scrollHeight;
     }
 
+    function ensureLoopContainer() {
+      if (currentLoopContainer) return currentLoopContainer;
+      const container = document.getElementById('messages');
+      const div = document.createElement('div');
+      div.className = 'message loop';
+      div.innerHTML =
+        '<div class="avatar">L</div>' +
+        '<div class="bubble">' +
+        '<div class="loop-container">' +
+        '<div class="loop-container-header" onclick="toggleLoopContainer(this)">' +
+        '<span class="loop-container-title">Agent Loop</span>' +
+        '<span class="loop-container-count">0 items</span>' +
+        '</div>' +
+        '<div class="loop-container-body"></div>' +
+        '</div>' +
+        '</div>';
+      container.appendChild(div);
+      currentLoopContainer = {
+        root: div.querySelector('.loop-container'),
+        body: div.querySelector('.loop-container-body'),
+        count: div.querySelector('.loop-container-count'),
+        items: 0,
+      };
+      return currentLoopContainer;
+    }
+
+    function appendLoopEvent(label, content, kind) {
+      const group = ensureLoopContainer();
+      group.items += 1;
+      group.count.textContent = group.items + (group.items === 1 ? ' item' : ' items');
+      const item = document.createElement('div');
+      item.className = 'loop-event ' + (kind || '');
+      const eventLabel = document.createElement('div');
+      eventLabel.className = 'loop-event-label';
+      eventLabel.textContent = label;
+      const eventBody = document.createElement('div');
+      eventBody.className = 'loop-event-body';
+      eventBody.textContent = content;
+      item.appendChild(eventLabel);
+      item.appendChild(eventBody);
+      group.body.appendChild(item);
+      group.body.scrollTop = group.body.scrollHeight;
+      const messages = document.getElementById('messages');
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function collapseLoopContainer() {
+      if (currentLoopContainer) {
+        currentLoopContainer.root.classList.add('collapsed');
+        currentLoopContainer = null;
+      }
+    }
+
+    function toggleLoopContainer(header) {
+      header.parentElement.classList.toggle('collapsed');
+    }
+
     function escapeHtml(text) {
       const div = document.createElement('div');
       div.textContent = text;
@@ -494,6 +694,12 @@
       const input = document.getElementById('user-input');
       const text = input.value.trim();
       if (!text || processing) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setStatus('disconnected', 'Not connected');
+        updateSendButton();
+        return;
+      }
+      collapseLoopContainer();
       addMessage('user', text);
       input.value = '';
       processing = true;
@@ -510,7 +716,7 @@
     }
 
     function updateSendButton() {
-      document.getElementById('send-btn').disabled = processing;
+      document.getElementById('send-btn').disabled = processing || !ws || ws.readyState !== WebSocket.OPEN;
     }
 
     function compactSession() {
@@ -524,6 +730,7 @@
     }
 
     function listSessions() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ action: 'list_sessions' }));
     }
 
@@ -565,9 +772,12 @@
       }
     }
 
-    function autoNameSession() {
-      if (sessionId) {
-        ws.send(JSON.stringify({ action: 'auto_name_session', session_id: sessionId }));
+    function autoNameSession(id) {
+      const targetId = id || sessionId;
+      if (targetId) {
+        namingSessions.add(targetId);
+        listSessions();
+        ws.send(JSON.stringify({ action: 'auto_name_session', session_id: targetId }));
       }
     }
 
@@ -585,11 +795,13 @@
     function renderSessions(sessions) {
       const container = document.getElementById('session-list');
       container.innerHTML = sessions.map(function (s) {
+        const spinner = namingSessions.has(s.id) ? '<span class="naming-spinner"></span>' : '';
         return '<div class="session-item' + (s.id === sessionId ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
           '<span class="title">' + escapeHtml(s.title || 'Untitled') + '</span>' +
+          spinner +
           '<span class="actions">' +
           '<button title="Rename" onclick="startRename(\'' + s.id + '\', event)">&#9998;</button>' +
-          '<button title="Auto-name" onclick="event.stopPropagation();ws.send(JSON.stringify({action:\'auto_name_session\',session_id:\'' + s.id + '\'}))">AI</button>' +
+          '<button title="Auto-name" onclick="event.stopPropagation();autoNameSession(\'' + s.id + '\')">AI</button>' +
           '<button title="Fork" onclick="forkSession(\'' + s.id + '\', event)">F</button>' +
           '<button title="Delete" onclick="deleteSession(\'' + s.id + '\', event)">&#10005;</button>' +
           '</span></div>';

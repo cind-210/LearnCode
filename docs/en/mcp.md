@@ -1,6 +1,6 @@
 # MCP
 
-MCP support lives in `src/mcp.py`.
+MCP support lives in `src/mcp/client.py`.
 
 ## Current Capability
 
@@ -49,7 +49,7 @@ Text blocks from MCP results are joined into the tool output.
 
 ## Config
 
-MCP server config is represented by `McpServerConfig` in `src/config.py`.
+MCP server config is represented by `McpServerConfig` in `src/config/runtime.py`.
 
 Fields:
 
@@ -62,7 +62,7 @@ Fields:
 - `enabled`
 - `protocol`
 
-Only local stdio newline-json behavior is currently implemented by `src/mcp.py`.
+Only local stdio newline-json behavior is currently implemented by `src/mcp/client.py`.
 
 ## Current Limitations Compared With MiniCode
 

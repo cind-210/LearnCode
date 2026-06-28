@@ -70,13 +70,13 @@ If you want to debug why the model called a tool, start with:
 
 - `src/main.py` -> [api.md](api.md)
 - `static/index.html` -> [frontend.md](frontend.md)
-- `src/agent_loop.py` -> [agent-loop.md](agent-loop.md)
-- `src/tools/base.py` -> [tools.md](tools.md)
-- `src/session.py` -> [sessions.md](sessions.md)
-- `src/compact/*` and `src/utils/*` -> [context.md](context.md)
-- `src/config.py`, `src/anthropic_adapter.py`, `src/openai_adapter.py` -> [models-config.md](models-config.md)
-- `src/mcp.py` -> [mcp.md](mcp.md)
-- `src/skills.py` -> [skills.md](skills.md)
+- `src/loop/runner.py` -> [agent-loop.md](agent-loop.md)
+- `src/tools/builtin.py` -> [tools.md](tools.md)
+- `src/sessions/store.py` -> [sessions.md](sessions.md)
+- `src/context/compact/*` and `src/context/*` -> [context.md](context.md)
+- `src/config/runtime.py`, `src/models/anthropic.py`, `src/models/openai.py` -> [models-config.md](models-config.md)
+- `src/mcp/client.py` -> [mcp.md](mcp.md)
+- `src/skills/registry.py` -> [skills.md](skills.md)
 
 ## Current Implementation Boundaries
 

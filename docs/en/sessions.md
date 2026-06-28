@@ -1,6 +1,6 @@
 # Sessions
 
-Sessions are implemented in `src/session.py` and stored in `LearnCode/.sessions`.
+Sessions are implemented in `src/sessions/store.py` and stored in `LearnCode/.sessions`.
 
 ## Storage Format
 
@@ -74,6 +74,6 @@ Manual compaction in `main.py` calls this function after `run_manual_compact()`.
 
 ## Current Limitations
 
-- Sessions are scoped only by the local `.sessions` directory, not by a global per-project directory like MiniCode's `~/.mini-code/projects`.
+- Sessions are scoped only by the local `.sessions` directory, not by a global per-project directory.
 - There is no separate transcript renderer module.
 - Auto compact does not yet append a compact boundary event; manual compact does.

@@ -1,6 +1,6 @@
 # Skills
 
-Skills are implemented in `src/skills.py`.
+Skills are implemented in `src/skills/registry.py`.
 
 ## Data Model
 
@@ -53,7 +53,7 @@ The agent loop currently uses `get_default_skill_registry()`.
 
 ## Current Limitations Compared With MiniCode
 
-- Skills are not automatically discovered from `.mini-code/skills`, `.claude/skills`, or home directories.
+- Skills are not automatically discovered from `.learncode/skills`, `.claude/skills`, or home directories.
 - `load_skill` tool is not implemented.
 - There are no `skills add/list/remove` management commands.
 - `SKILL.md` package-style directories are not fully supported.

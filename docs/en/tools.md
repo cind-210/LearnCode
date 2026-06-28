@@ -1,6 +1,6 @@
 # Tools
 
-Tools are defined by `ToolDefinition` in `src/tool.py` and registered in `src/tools/base.py`.
+Tools are defined by `ToolDefinition` in `src/tools/registry.py` and registered in `src/tools/builtin.py`.
 
 ## Registry
 

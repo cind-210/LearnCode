@@ -3,8 +3,8 @@
 LearnCode has four main layers:
 
 1. Web entrypoint: `src/main.py`
-2. Agent runtime: `src/agent_loop.py`
-3. Tool/model/session infrastructure: `src/tools`, `src/tool.py`, `src/*_adapter.py`, `src/session.py`
+2. Agent runtime: `src/loop/runner.py`
+3. Tool/model/session infrastructure: `src/tools`, `src/tools/registry.py`, `src/models/*.py`, `src/sessions/store.py`
 4. Browser UI: `static/index.html`
 
 ## Request Flow
@@ -20,27 +20,27 @@ LearnCode has four main layers:
 ## Important Files
 
 - `src/main.py`: FastAPI app, REST endpoints, WebSocket action dispatch.
-- `src/agent_loop.py`: multi-step `model -> tools -> model` loop.
+- `src/loop/runner.py`: multi-step `model -> tools -> model` loop.
 - `src/prompt.py`: system prompt construction.
-- `src/tool.py`: tool registry, metadata, execution.
-- `src/tools/base.py`: built-in file, command, ask-user, and web tools.
-- `src/session.py`: append-only session persistence.
-- `src/config.py`: settings, env vars, MCP config, provider selection.
-- `src/anthropic_adapter.py`: Anthropic-style API adapter.
-- `src/openai_adapter.py`: OpenAI-style API adapter.
-- `src/mcp.py`: stdio newline-json MCP tool loading.
-- `src/skills.py`: simple local skill registry.
-- `src/compact/*`: context compression strategies.
+- `src/tools/registry.py`: tool registry, metadata, execution.
+- `src/tools/builtin.py`: built-in file, command, ask-user, and web tools.
+- `src/sessions/store.py`: append-only session persistence.
+- `src/config/runtime.py`: settings, env vars, MCP config, provider selection.
+- `src/models/anthropic.py`: Anthropic-style API adapter.
+- `src/models/openai.py`: OpenAI-style API adapter.
+- `src/mcp/client.py`: stdio newline-json MCP tool loading.
+- `src/skills/registry.py`: simple local skill registry.
+- `src/context/compact/*`: context compression strategies.
 - `static/index.html`: single-file web UI.
 
 ## Runtime State
 
 - Sessions are stored in `LearnCode/.sessions`.
-- Large tool outputs are stored under `~/.mini-code/tool-results` by `utils/tool_result_storage.py`.
-- Global settings are read from `~/.mini-code/settings.json`, `~/.mini-code/mcp.json`, and environment variables.
+- Large tool outputs are stored under `~/.learncode/tool-results` by `context/tool_result_storage.py`.
+- Global settings are read from `~/.learncode/settings.json`, `~/.learncode/mcp.json`, and environment variables.
 
 ## Current Limitations
 
 - The web UI is static HTML without a build system.
 - There is no CLI/TUI entrypoint equivalent to MiniCode's terminal UI.
-- Several modules still use MiniCode-compatible path/env names such as `MINI_CODE_HOME`.
+- Environment variables use `LEARN_CODE_*`.

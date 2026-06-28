@@ -12,6 +12,14 @@ Returns:
 {"status":"ok"}
 ```
 
+### `GET /api/workspace`
+
+Returns the workspace bound to the current server process. LearnCode's workspace is the server startup directory, or the `WORKSPACE` environment variable when set.
+
+```json
+{"workspace":"C:/path/to/project"}
+```
+
 ### `GET /api/sessions`
 
 Lists sessions from `.sessions`. It calls `cleanup_expired_sessions()` first.
@@ -32,7 +40,7 @@ Creates a session.
 Input:
 
 ```json
-{"title":"New Session","workspace":"C:/path/to/workspace"}
+{"title":"New Session"}
 ```
 
 Returns:
@@ -66,7 +74,6 @@ Runs one agent turn.
 Fields:
 
 - `message`: user input
-- `workspace`: optional workspace; defaults to server process cwd
 - `session_id`: optional existing session
 
 Server events:
