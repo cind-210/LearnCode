@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from ..skills.registry import get_default_skill_registry
 from .registry import ToolDefinition, ToolRegistry, ToolRegistryMetadata, ToolResult, ToolContext
 
 
@@ -161,6 +162,21 @@ async def _ask_user(input: dict, context: ToolContext) -> ToolResult:
     return ToolResult(ok=True, output=f"[ASK_USER] {question}")
 
 
+async def _load_skill(input: dict, context: ToolContext) -> ToolResult:
+    name = str(input.get("name", "")).strip()
+    if not name:
+        return ToolResult(ok=False, output="Skill name is required.")
+    skill = get_default_skill_registry().get(name)
+    if skill is None:
+        available = ", ".join(get_default_skill_registry().names()) or "none"
+        return ToolResult(ok=False, output=f"Skill not found: {name}. Available skills: {available}")
+    source = f"\nSource: {skill.source}" if skill.source else ""
+    return ToolResult(
+        ok=True,
+        output=f"<skill name=\"{skill.name}\">\n{skill.prompt}\n</skill>{source}",
+    )
+
+
 async def _web_fetch(input: dict, context: ToolContext) -> ToolResult:
     url = input.get("url", "")
     try:
@@ -271,6 +287,18 @@ def build_builtin_registry() -> ToolRegistry:
                 "required": ["question"],
             },
             run=_ask_user,
+        ),
+        ToolDefinition(
+            name="load_skill",
+            description="Load the full prompt for an available skill by name before following that skill.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The skill name from the available_skills list."},
+                },
+                "required": ["name"],
+            },
+            run=_load_skill,
         ),
         ToolDefinition(
             name="web_fetch",

@@ -24,9 +24,10 @@ CHARS_PER_TOKEN: dict[str, float] = {
     "tool_result": 2.0,
     "context_summary": 3.5,
     "snip_boundary": 3.5,
+    "microcompact_boundary": 3.5,
 }
 
-CLEAR_MARKER = "[Output cleared for context space]"
+CLEAR_MARKER = "[Old tool result content cleared]"
 
 
 class TokenAccountingResult:
@@ -92,7 +93,7 @@ def _message_content_length(message: ChatMessage) -> int:
             return len(json.dumps(message.input))
         except Exception:
             return 0
-    if message.role in ("tool_result", "context_summary", "snip_boundary"):
+    if message.role in ("tool_result", "context_summary", "snip_boundary", "microcompact_boundary"):
         return len(message.content)
     return 0
 

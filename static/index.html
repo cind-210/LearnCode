@@ -568,6 +568,8 @@
                 addMessage('tool', 'Tool: ' + (m.tool_name || '') + '\n' + JSON.stringify(m.input || {}, null, 2));
               } else if (m.role === 'tool_result') {
                 addMessage('tool', (m.is_error ? '[Error] ' : '') + (m.content || ''));
+              } else if (m.role === 'compact_boundary') {
+                addMessage('compact', m.content || 'Context compacted');
               } else if (m.role === 'system') {
                 // skip system prompt
               } else if (m.content) {
@@ -608,7 +610,7 @@
           listSessions();
           break;
         case 'compact':
-          addMessage('compact', 'Context compacted: ' + (data.tokens_before || '?') + ' -> ' + (data.tokens_after || '?') + ' tokens');
+          addMessage('compact', (data.trigger === 'auto' ? 'Auto compacted: ' : 'Context compacted: ') + (data.tokens_before || '?') + ' -> ' + (data.tokens_after || '?') + ' tokens');
           break;
       }
     }

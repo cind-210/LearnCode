@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..loop.messages import ChatMessage
+from ..context.token_estimator import CLEAR_MARKER
 
 
 MAX_TITLE_LENGTH = 60
@@ -40,6 +41,16 @@ class Session:
     @property
     def id(self) -> str:
         return self.meta.id
+
+
+@dataclass
+class TranscriptItem:
+    role: str
+    content: str = ""
+    tool_name: str = ""
+    input: Any = None
+    is_error: bool = False
+    timestamp: int = 0
 
 
 def _now_ms() -> int:
@@ -90,6 +101,8 @@ def _serialize_message(message: ChatMessage) -> dict[str, Any]:
         data["timestamp"] = message.timestamp
     if message.removed_message_ids:
         data["removed_message_ids"] = message.removed_message_ids
+    if message.cleared_message_ids:
+        data["cleared_message_ids"] = message.cleared_message_ids
     if message.removed_count:
         data["removed_count"] = message.removed_count
     if message.tokens_freed:
@@ -131,6 +144,8 @@ def _deserialize_message(data: dict[str, Any], event_uuid: str = "") -> ChatMess
         kwargs["is_error"] = data["is_error"]
     if "removed_message_ids" in data:
         kwargs["removed_message_ids"] = data["removed_message_ids"]
+    if "cleared_message_ids" in data:
+        kwargs["cleared_message_ids"] = data["cleared_message_ids"]
     if "provider_usage" in data:
         kwargs["provider_usage"] = ProviderUsage(**data["provider_usage"])
     if "usage_stale" in data:
@@ -149,6 +164,7 @@ def _role_to_event_type(role: str) -> str:
         "tool_result": "tool_result",
         "context_summary": "summary",
         "snip_boundary": "snip_boundary",
+        "microcompact_boundary": "microcompact_boundary",
     }.get(role, "user")
 
 
@@ -315,6 +331,15 @@ def _message_event(message: ChatMessage, session_id: str, workspace: str, parent
             "timestamp": event["timestamp"],
             "created_at": event["timestamp"],
         }
+    if message.role == "microcompact_boundary":
+        event["microcompact_metadata"] = {
+            "type": "microcompact_boundary",
+            "cleared_message_ids": message.cleared_message_ids,
+            "cleared_count": message.removed_count,
+            "tokens_freed": message.tokens_freed,
+            "timestamp": event["timestamp"],
+            "created_at": event["timestamp"],
+        }
     return event
 
 
@@ -362,6 +387,42 @@ def _reconstruct_snipped_events(events: list[dict[str, Any]]) -> list[dict[str, 
                     inserted.add(snip_id)
             continue
         result.append(event)
+    return result
+
+
+def _reconstruct_microcompacted_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cleared_ids: set[str] = set()
+    for event in events:
+        if event.get("type") != "microcompact_boundary":
+            continue
+        metadata = event.get("microcompact_metadata", {})
+        ids = metadata.get("cleared_message_ids")
+        if isinstance(ids, list):
+            cleared_ids.update(str(item) for item in ids)
+    if not cleared_ids:
+        return events
+
+    result: list[dict[str, Any]] = []
+    for event in events:
+        message = event.get("message")
+        message_id = event.get("uuid")
+        tool_use_id = message.get("tool_use_id") if isinstance(message, dict) else None
+        if event.get("type") != "tool_result" or (
+            message_id not in cleared_ids and tool_use_id not in cleared_ids
+        ):
+            result.append(event)
+            continue
+        if not isinstance(message, dict):
+            result.append(event)
+            continue
+        compacted = {
+            **event,
+            "message": {
+                **message,
+                "content": CLEAR_MARKER,
+            },
+        }
+        result.append(compacted)
     return result
 
 
@@ -451,12 +512,47 @@ def load_session(session_dir: str, session_id: str) -> Optional[Session]:
     if not os.path.isfile(path):
         return None
     events = _read_events(path)
+    active_events = _active_events(events)
+    reconstructed_events = _reconstruct_microcompacted_events(_reconstruct_snipped_events(active_events))
     messages = [
         message
-        for message in (_unwrap_message(event) for event in _reconstruct_snipped_events(_active_events(events)))
+        for message in (_unwrap_message(event) for event in reconstructed_events)
         if message is not None
     ]
     return Session(meta=_session_meta_from_file(session_dir, session_id), messages=messages)
+
+
+def load_transcript(session_dir: str, session_id: str) -> Optional[list[TranscriptItem]]:
+    path = _session_path(session_dir, session_id)
+    if not os.path.isfile(path):
+        return None
+    events = _read_events(path)
+    items: list[TranscriptItem] = []
+    for event in events:
+        event_type = event.get("type")
+        message = event.get("message")
+        if event_type == "compact_boundary":
+            metadata = event.get("compact_metadata", {})
+            pre_tokens = metadata.get("pre_tokens", "?")
+            post_tokens = metadata.get("post_tokens", "?")
+            trigger = metadata.get("trigger", "unknown")
+            items.append(TranscriptItem(
+                role="compact_boundary",
+                content=f"Context compacted ({trigger}): {pre_tokens} -> {post_tokens} tokens",
+            ))
+            continue
+        if not isinstance(message, dict):
+            continue
+        chat_message = _deserialize_message(message, event_uuid=event.get("uuid", ""))
+        items.append(TranscriptItem(
+            role=chat_message.role,
+            content=chat_message.content,
+            tool_name=chat_message.tool_name,
+            input=chat_message.input,
+            is_error=chat_message.is_error,
+            timestamp=chat_message.timestamp,
+        ))
+    return items
 
 
 def save_session(session_dir: str, session: Session, already_saved_count: int = 0) -> None:

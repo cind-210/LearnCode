@@ -16,6 +16,11 @@ from ..config.runtime import McpServerConfig
 from ..tools.registry import ToolDefinition, ToolRegistry, ToolRegistryMetadata, ToolResult
 
 
+def _sanitize_tool_name_part(value: str) -> str:
+    sanitized = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in value)
+    return sanitized.strip("_") or "tool"
+
+
 @dataclass
 class McpConnection:
     server_id: str
@@ -120,18 +125,21 @@ async def start_mcp_server(config: McpServerConfig, server_id: str) -> Optional[
 
 
 def _build_mcp_tool_definition(mcp_tool: dict, conn: McpConnection) -> ToolDefinition:
+    original_name = str(mcp_tool["name"])
+
     async def _run(input: Any, context: Any) -> ToolResult:
         try:
-            result = await conn.call_tool(mcp_tool["name"], input if isinstance(input, dict) else {})
+            result = await conn.call_tool(original_name, input if isinstance(input, dict) else {})
             content = result.get("content", [])
             text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
             return ToolResult(ok=True, output="\n".join(text_parts))
         except Exception as e:
             return ToolResult(ok=False, output=str(e))
 
+    wrapped_name = f"mcp__{_sanitize_tool_name_part(conn.server_id)}__{_sanitize_tool_name_part(original_name)}"
     return ToolDefinition(
-        name=mcp_tool["name"],
-        description=mcp_tool.get("description", ""),
+        name=wrapped_name,
+        description=f"[MCP:{conn.server_id}] {mcp_tool.get('description', '')}".strip(),
         input_schema=mcp_tool.get("inputSchema", {}),
         run=_run,
     )

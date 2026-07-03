@@ -14,7 +14,6 @@ from ..context.compact.manual_compact import manual_compact
 from ..context.compact.microcompact import microcompact
 from ..context.compact.context_collapse import (
     ContextCollapseState,
-    apply_context_collapse_if_needed,
     create_context_collapse_state,
     project_collapsed_view,
 )
@@ -74,6 +73,7 @@ class AgentLoopState:
     stop_reason: str = ""
     collapse_state: ContextCollapseState = field(default_factory=create_context_collapse_state)
     auto_compact_failures: int = 0
+    auto_compact_result: Optional[CompressionResult] = None
     _runtime_config: Optional[RuntimeConfig] = None
 
 
@@ -83,6 +83,7 @@ class AgentLoopResult:
     turn: int
     stop_reason: str
     usage: Optional[ProviderUsage] = None
+    auto_compact_result: Optional[CompressionResult] = None
 
 
 def _build_system_message(
@@ -131,17 +132,19 @@ def _build_tool_result_message(
 
 def _build_assistant_message(step: AgentStep) -> list[ChatMessage]:
     messages: list[ChatMessage] = []
+    timestamp = int(time.time() * 1000)
     if step.thinking_blocks:
         messages.append(ChatMessage.thinking(
             blocks=step.thinking_blocks,
             provider_usage=step.usage,
+            timestamp=timestamp,
         ))
     if step.type == "assistant":
         content = step.content or ""
         if step.kind == "progress":
-            messages.append(ChatMessage.progress(content=content, provider_usage=step.usage))
+            messages.append(ChatMessage.progress(content=content, provider_usage=step.usage, timestamp=timestamp))
         else:
-            messages.append(ChatMessage.assistant(content=content, provider_usage=step.usage))
+            messages.append(ChatMessage.assistant(content=content, provider_usage=step.usage, timestamp=timestamp))
     return messages
 
 
@@ -229,21 +232,20 @@ async def _apply_compression(
         state.messages = snip_result.messages
         changed = True
 
-    before_microcompact = state.messages
-    state.messages = microcompact(state.messages, model)
-    if state.messages is not before_microcompact:
+    microcompact_result = microcompact(state.messages, model)
+    if microcompact_result.did_microcompact:
+        state.messages = microcompact_result.messages
         changed = True
 
-    collapse_result = await apply_context_collapse_if_needed(
-        state.messages, model, model_adapter, state.collapse_state,
-    )
-    if collapse_result.collapsed:
-        state.messages = collapse_result.messages
-        changed = True
+    # Context collapse code is kept for reference/resume compatibility, but it
+    # is not triggered in the active compression pipeline. Its candidate rules
+    # overlap heavily with snip compact, and the upstream Open-ClaudeCode
+    # checkout does not include the concrete implementation this module mirrors.
 
     result = await auto_compact(state.messages, model, model_adapter)
     if result:
         state.messages = result.messages
+        state.auto_compact_result = result
         return True
 
     return changed
@@ -259,6 +261,8 @@ async def run_agent_loop(
 ) -> AgentLoopResult:
     if state is None:
         state = AgentLoopState()
+
+    state.auto_compact_result = None
 
     if not state.messages:
         skills = get_default_skill_registry()
@@ -313,6 +317,7 @@ async def run_agent_loop(
                     turn=state.turn,
                     stop_reason=state.stop_reason,
                     usage=step.usage,
+                    auto_compact_result=state.auto_compact_result,
                 )
 
             if step.type == "tool_calls" and step.calls:
@@ -345,6 +350,7 @@ async def run_agent_loop(
         messages=state.messages,
         turn=state.turn,
         stop_reason=state.stop_reason,
+        auto_compact_result=state.auto_compact_result,
     )
 
 

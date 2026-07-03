@@ -30,6 +30,7 @@ from ..sessions.store import (
     fork_session,
     list_sessions,
     load_session,
+    load_transcript,
     rename_session,
     save_session,
     Session,
@@ -218,7 +219,30 @@ async def websocket_endpoint(ws: WebSocket):
                     )
 
                     session.messages = result.messages
-                    save_session(SESSION_DIR, session)
+                    if result.auto_compact_result:
+                        retained = [
+                            m for m in result.messages
+                            if m is not result.auto_compact_result.summary
+                        ]
+                        append_compact_boundary(
+                            SESSION_DIR,
+                            session.meta.id,
+                            result.auto_compact_result.summary.content,
+                            "auto",
+                            result.auto_compact_result.tokens_before,
+                            result.auto_compact_result.tokens_after,
+                            retained,
+                            workspace=session.meta.workspace,
+                        )
+                        session = load_session(SESSION_DIR, session.meta.id) or session
+                        state = AgentLoopState(messages=session.messages)
+                        await send_event("compact", {
+                            "trigger": "auto",
+                            "tokens_before": result.auto_compact_result.tokens_before,
+                            "tokens_after": result.auto_compact_result.tokens_after,
+                        })
+                    else:
+                        save_session(SESSION_DIR, session)
 
                     await send_event("done", {
                         "stop_reason": result.stop_reason,
@@ -315,12 +339,13 @@ async def websocket_endpoint(ws: WebSocket):
                 sid = req.get("session_id")
                 if sid:
                     session = load_session(SESSION_DIR, sid)
-                    if session:
+                    transcript = load_transcript(SESSION_DIR, sid)
+                    if session and transcript is not None:
                         state = AgentLoopState(messages=session.messages)
                         await send_event("session_loaded", {
                             "id": session.meta.id,
                             "title": session.meta.title,
-                            "message_count": len(session.messages),
+                            "message_count": len(transcript),
                             "messages": [
                                 {
                                     "role": m.role,
@@ -329,7 +354,7 @@ async def websocket_endpoint(ws: WebSocket):
                                     "input": m.input,
                                     "is_error": m.is_error,
                                 }
-                                for m in session.messages
+                                for m in transcript
                             ],
                         })
 

@@ -59,6 +59,7 @@ class ChatMessage:
     compressed_count: int = 0
     timestamp: int = 0
     removed_message_ids: list[str] = field(default_factory=list)
+    cleared_message_ids: list[str] = field(default_factory=list)
     removed_count: int = 0
     tokens_freed: int = 0
     provider_usage: Optional[ProviderUsage] = None
@@ -101,6 +102,10 @@ class ChatMessage:
     @classmethod
     def snip_boundary(cls, content: str, removed_message_ids: list[str], removed_count: int, tokens_freed: int, timestamp: int, **kwargs: Any) -> ChatMessage:
         return cls(role="snip_boundary", content=content, removed_message_ids=removed_message_ids, removed_count=removed_count, tokens_freed=tokens_freed, timestamp=timestamp, **kwargs)
+
+    @classmethod
+    def microcompact_boundary(cls, content: str, cleared_message_ids: list[str], removed_count: int, tokens_freed: int, timestamp: int, **kwargs: Any) -> ChatMessage:
+        return cls(role="microcompact_boundary", content=content, cleared_message_ids=cleared_message_ids, removed_count=removed_count, tokens_freed=tokens_freed, timestamp=timestamp, **kwargs)
 
     # Convenience aliases
     @classmethod
