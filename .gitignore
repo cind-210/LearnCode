@@ -2,6 +2,7 @@ __pycache__/
 .sessions/
 docs/
 .env
+test/
 
 *.log
 记录.md
