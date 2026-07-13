@@ -70,8 +70,10 @@ Type a message in the web page and send it. LearnCode will create or reuse a ses
 
 The Compact button summarizes earlier context in the current session so later model requests can carry a shorter conversation. It is only an optional manual action; even if you do not click it, the backend can still compress context automatically according to its context-length rules.
 
+## Changelog
+
 <details>
-<summary>Changelog</summary>
+<summary>Show details</summary>
 
 ### 2026-07-13
 
