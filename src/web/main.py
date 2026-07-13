@@ -5,8 +5,10 @@ Provides the web frontend and API for the agent.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import sys
 from typing import Any, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -44,6 +46,36 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 STATIC_DIR = os.path.join(PROJECT_DIR, "static")
 SESSION_DIR = os.path.join(PROJECT_DIR, ".sessions")
 APP_WORKSPACE = os.path.abspath(os.environ.get("WORKSPACE", os.getcwd()))
+
+
+def _error_payload(error: BaseException) -> dict[str, str]:
+    message = str(error) or error.__class__.__name__
+    return {
+        "type": error.__class__.__name__,
+        "message": message,
+    }
+
+
+def _log_error(error: BaseException) -> None:
+    payload = _error_payload(error)
+    print(f"{payload['type']}: {payload['message']}", file=sys.stderr)
+
+
+def _close_open_tool_calls(messages: list[ChatMessage]) -> None:
+    open_calls: dict[str, ChatMessage] = {}
+    for message in messages:
+        if message.role == "assistant_tool_call" and message.tool_use_id:
+            open_calls[message.tool_use_id] = message
+        elif message.role == "tool_result" and message.tool_use_id:
+            open_calls.pop(message.tool_use_id, None)
+
+    for call in open_calls.values():
+        messages.append(ChatMessage.tool_result(
+            tool_use_id=call.tool_use_id,
+            tool_name=call.tool_name,
+            content="",
+            is_error=True,
+        ))
 
 
 def _is_cjk_char(ch: str) -> bool:
@@ -141,9 +173,13 @@ async def websocket_endpoint(ws: WebSocket):
     state: Optional[AgentLoopState] = None
     session: Optional[Session] = None
     running = False
+    current_task: Optional[asyncio.Task] = None
+    active_run_id = 0
+    send_lock = asyncio.Lock()
 
     async def send_event(event_type: str, data: Any):
-        await ws.send_text(json.dumps({"type": event_type, "data": data}, ensure_ascii=False, default=str))
+        async with send_lock:
+            await ws.send_text(json.dumps({"type": event_type, "data": data}, ensure_ascii=False, default=str))
 
     await send_event("workspace", {"workspace": APP_WORKSPACE})
     sessions = list_sessions(SESSION_DIR)
@@ -159,6 +195,8 @@ async def websocket_endpoint(ws: WebSocket):
                 if running:
                     await send_event("error", "Agent is already running")
                     continue
+                active_run_id += 1
+                run_id = active_run_id
 
                 message = req.get("message", "")
                 workspace = APP_WORKSPACE
@@ -179,6 +217,9 @@ async def websocket_endpoint(ws: WebSocket):
                     state = AgentLoopState(messages=[])
 
                 if created_new_session:
+                    first_user_message = ChatMessage.user(message)
+                    session.messages = [first_user_message]
+                    save_session(SESSION_DIR, session)
                     await send_event("session_created", {
                         "id": session.meta.id,
                         "title": session.meta.title,
@@ -187,6 +228,7 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     sessions = list_sessions(SESSION_DIR)
                     await send_event("sessions", [{"id": s.id, "title": s.title, "updated_at": s.updated_at} for s in sessions])
+                    state = AgentLoopState(messages=[first_user_message])
 
                 adapter = await _get_model_adapter()
 
@@ -195,13 +237,14 @@ async def websocket_endpoint(ws: WebSocket):
                     permission_mode=PermissionMode.DEFAULT,
                 )
 
-                running = True
-
                 async def on_step(step):
+                    if run_id != active_run_id:
+                        return
                     await send_event("step", {
                         "type": step.type,
                         "content": step.content,
                         "kind": getattr(step, "kind", None),
+                        "thinking_blocks": [b.__dict__ for b in (step.thinking_blocks or [])],
                         "calls": [
                             {"id": c.id, "tool_name": c.tool_name, "input": c.input}
                             for c in (step.calls or [])
@@ -209,51 +252,103 @@ async def websocket_endpoint(ws: WebSocket):
                         "usage": step.usage.__dict__ if step.usage else None,
                     })
 
-                try:
-                    result = await run_agent_loop(
-                        user_input=message,
-                        model_adapter=adapter,
-                        config=config,
-                        state=state,
-                        on_step=on_step,
-                    )
+                async def on_delta(delta):
+                    if run_id != active_run_id:
+                        return
+                    await send_event("delta", delta)
 
-                    session.messages = result.messages
-                    if result.auto_compact_result:
-                        retained = [
-                            m for m in result.messages
-                            if m is not result.auto_compact_result.summary
-                        ]
-                        append_compact_boundary(
-                            SESSION_DIR,
-                            session.meta.id,
-                            result.auto_compact_result.summary.content,
-                            "auto",
-                            result.auto_compact_result.tokens_before,
-                            result.auto_compact_result.tokens_after,
-                            retained,
-                            workspace=session.meta.workspace,
+                async def on_messages_changed(messages):
+                    if run_id != active_run_id or not session:
+                        return
+                    session.messages = messages
+                    save_session(SESSION_DIR, session)
+
+                async def run_chat_task():
+                    nonlocal running, current_task, session, state
+                    try:
+                        result = await run_agent_loop(
+                            user_input=message,
+                            model_adapter=adapter,
+                            config=config,
+                            state=state,
+                            on_step=on_step,
+                            on_delta=on_delta,
+                            on_messages_changed=on_messages_changed,
+                            user_already_appended=created_new_session,
                         )
-                        session = load_session(SESSION_DIR, session.meta.id) or session
-                        state = AgentLoopState(messages=session.messages)
-                        await send_event("compact", {
-                            "trigger": "auto",
-                            "tokens_before": result.auto_compact_result.tokens_before,
-                            "tokens_after": result.auto_compact_result.tokens_after,
-                        })
-                    else:
-                        save_session(SESSION_DIR, session)
+                        if run_id != active_run_id:
+                            return
 
-                    await send_event("done", {
-                        "stop_reason": result.stop_reason,
-                        "turn": result.turn,
-                        "session_id": session.meta.id,
-                        "auto_name": created_new_session,
-                    })
-                except Exception as e:
-                    await send_event("error", str(e))
-                finally:
+                        session.messages = result.messages
+                        if result.auto_compact_result:
+                            retained = [
+                                m for m in result.messages
+                                if m is not result.auto_compact_result.summary
+                            ]
+                            append_compact_boundary(
+                                SESSION_DIR,
+                                session.meta.id,
+                                result.auto_compact_result.summary.content,
+                                "auto",
+                                result.auto_compact_result.tokens_before,
+                                result.auto_compact_result.tokens_after,
+                                retained,
+                                workspace=session.meta.workspace,
+                            )
+                            session = load_session(SESSION_DIR, session.meta.id) or session
+                            state = AgentLoopState(messages=session.messages)
+                            await send_event("compact", {
+                                "trigger": "auto",
+                                "tokens_before": result.auto_compact_result.tokens_before,
+                                "tokens_after": result.auto_compact_result.tokens_after,
+                            })
+                        else:
+                            save_session(SESSION_DIR, session)
+
+                        await send_event("done", {
+                            "stop_reason": result.stop_reason,
+                            "turn": result.turn,
+                            "session_id": session.meta.id,
+                            "auto_name": created_new_session,
+                        })
+                    except asyncio.CancelledError:
+                        if run_id != active_run_id:
+                            return
+                        if session and state:
+                            _close_open_tool_calls(state.messages)
+                            session.messages = state.messages
+                            save_session(SESSION_DIR, session)
+                        await send_event("stopped", {"session_id": session.meta.id if session else None})
+                    except Exception as e:
+                        if run_id != active_run_id:
+                            return
+                        if session and state:
+                            _close_open_tool_calls(state.messages)
+                            session.messages = state.messages
+                            save_session(SESSION_DIR, session)
+                        _log_error(e)
+                        await send_event("error", _error_payload(e))
+                    finally:
+                        if run_id == active_run_id:
+                            running = False
+                            current_task = None
+
+                running = True
+                current_task = asyncio.create_task(run_chat_task())
+
+            elif action == "stop":
+                if current_task and not current_task.done():
+                    active_run_id += 1
+                    current_task.cancel()
+                    if session and state:
+                        _close_open_tool_calls(state.messages)
+                        session.messages = state.messages
+                        save_session(SESSION_DIR, session)
                     running = False
+                    current_task = None
+                    await send_event("stopped", {"session_id": session.meta.id if session else None})
+                else:
+                    await send_event("error", "No running agent")
 
             elif action == "compact":
                 if not adapter or not session:
@@ -332,8 +427,9 @@ async def websocket_endpoint(ws: WebSocket):
                             if not title_saved and title:
                                 if rename_session(SESSION_DIR, sid, title, workspace=session.meta.workspace):
                                     await send_event("session_renamed", {"id": sid, "title": title})
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log_error(e)
+                            await send_event("error", _error_payload(e))
 
             elif action == "load_session":
                 sid = req.get("session_id")
@@ -350,6 +446,7 @@ async def websocket_endpoint(ws: WebSocket):
                                 {
                                     "role": m.role,
                                     "content": m.content,
+                                    "blocks": [b.__dict__ for b in (getattr(m, "blocks", None) or [])],
                                     "tool_name": m.tool_name,
                                     "input": m.input,
                                     "is_error": m.is_error,
@@ -393,8 +490,9 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as e:
+        _log_error(e)
         try:
-            await send_event("error", str(e))
+            await send_event("error", _error_payload(e))
         except Exception:
             pass
 

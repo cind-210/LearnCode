@@ -152,7 +152,8 @@ class ToolRegistry:
         try:
             return await tool.run(input, context)
         except Exception as e:
-            return ToolResult(ok=False, output=str(e))
+            message = str(e) or repr(e) or e.__class__.__name__
+            return ToolResult(ok=False, output=message)
 
     async def dispose(self) -> None:
         for disposer in self._disposers:

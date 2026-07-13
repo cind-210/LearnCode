@@ -47,6 +47,7 @@ class Session:
 class TranscriptItem:
     role: str
     content: str = ""
+    blocks: list[dict[str, Any]] = field(default_factory=list)
     tool_name: str = ""
     input: Any = None
     is_error: bool = False
@@ -547,6 +548,7 @@ def load_transcript(session_dir: str, session_id: str) -> Optional[list[Transcri
         items.append(TranscriptItem(
             role=chat_message.role,
             content=chat_message.content,
+            blocks=[b.__dict__ for b in (chat_message.blocks or [])],
             tool_name=chat_message.tool_name,
             input=chat_message.input,
             is_error=chat_message.is_error,

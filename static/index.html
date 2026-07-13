@@ -466,7 +466,7 @@
       </div>
       <div class="input-area">
         <textarea id="user-input" placeholder="Type a message..." rows="1" onkeydown="onKeyDown(event)"></textarea>
-        <button id="send-btn" onclick="sendMessage()">Send</button>
+        <button id="send-btn" onclick="onSendButtonClick()">Send</button>
       </div>
     </div>
   </div>
@@ -477,6 +477,7 @@
     let processing = false;
     let editingId = null;
     let currentLoopContainer = null;
+    let currentStreamEvent = null;
     const namingSessions = new Set();
 
     function connect() {
@@ -511,6 +512,10 @@
     function handleEvent(type, data) {
       switch (type) {
         case 'step':
+          currentStreamEvent = null;
+          if (data.thinking_blocks && data.thinking_blocks.length) {
+            appendLoopEvent('Thinking', formatThinkingBlocks(data.thinking_blocks), 'thinking');
+          }
           if (data.type === 'tool_calls') {
             if (data.content) {
               appendLoopEvent('Assistant', data.content, 'assistant');
@@ -529,22 +534,35 @@
             addMessage('assistant', data.content);
           }
           break;
+        case 'delta':
+          handleDelta(data);
+          break;
         case 'done':
           processing = false;
+          currentStreamEvent = null;
           collapseLoopContainer();
           updateSendButton();
           if (data.session_id) {
             sessionId = data.session_id;
-            if (data.auto_name) {
-              autoNameSession(data.session_id);
-            }
             listSessions();
           }
           setStatus('connected', 'Ready');
           break;
-        case 'error':
-          addMessage('error', 'Error: ' + data);
+        case 'stopped':
           processing = false;
+          currentStreamEvent = null;
+          collapseLoopContainer();
+          updateSendButton();
+          if (data && data.session_id) {
+            sessionId = data.session_id;
+            listSessions();
+          }
+          setStatus('connected', 'Stopped');
+          break;
+        case 'error':
+          addMessage('error', formatError(data));
+          processing = false;
+          currentStreamEvent = null;
           collapseLoopContainer();
           updateSendButton();
           setStatus('connected', 'Error');
@@ -558,6 +576,7 @@
         case 'session_loaded':
           document.getElementById('messages').innerHTML = '';
           currentLoopContainer = null;
+          currentStreamEvent = null;
           if (data.messages) {
             for (const m of data.messages) {
               if (m.role === 'user') {
@@ -568,6 +587,8 @@
                 addMessage('tool', 'Tool: ' + (m.tool_name || '') + '\n' + JSON.stringify(m.input || {}, null, 2));
               } else if (m.role === 'tool_result') {
                 addMessage('tool', (m.is_error ? '[Error] ' : '') + (m.content || ''));
+              } else if (m.role === 'assistant_thinking') {
+                appendLoopEvent('Thinking', formatThinkingBlocks(m.blocks || []), 'thinking');
               } else if (m.role === 'compact_boundary') {
                 addMessage('compact', m.content || 'Context compacted');
               } else if (m.role === 'system') {
@@ -585,9 +606,13 @@
           if (data.naming) {
             namingSessions.add(data.id);
           }
+          if (data.created_from_chat && data.naming) {
+            autoNameSession(data.id);
+          }
           if (!data.created_from_chat) {
             document.getElementById('messages').innerHTML = '';
             currentLoopContainer = null;
+            currentStreamEvent = null;
             addMessage('compact', 'New session: ' + data.title);
           }
           listSessions();
@@ -675,6 +700,37 @@
       messages.scrollTop = messages.scrollHeight;
     }
 
+    function appendStreamingLoopEvent(label, kind) {
+      const group = ensureLoopContainer();
+      group.items += 1;
+      group.count.textContent = group.items + (group.items === 1 ? ' item' : ' items');
+      const item = document.createElement('div');
+      item.className = 'loop-event ' + (kind || '');
+      const eventLabel = document.createElement('div');
+      eventLabel.className = 'loop-event-label';
+      eventLabel.textContent = label;
+      const eventBody = document.createElement('div');
+      eventBody.className = 'loop-event-body';
+      item.appendChild(eventLabel);
+      item.appendChild(eventBody);
+      group.body.appendChild(item);
+      return { group, body: eventBody, content: '', kind };
+    }
+
+    function handleDelta(data) {
+      if (!data || (data.type !== 'text' && data.type !== 'thinking')) return;
+      const kind = data.type === 'thinking' ? 'thinking' : 'assistant';
+      const label = data.type === 'thinking' ? 'Thinking' : 'Assistant';
+      if (!currentStreamEvent || currentStreamEvent.kind !== kind) {
+        currentStreamEvent = appendStreamingLoopEvent(label, kind);
+      }
+      currentStreamEvent.content += data.type === 'thinking' ? (data.thinking || '') : (data.text || '');
+      currentStreamEvent.body.textContent = currentStreamEvent.content;
+      currentStreamEvent.group.body.scrollTop = currentStreamEvent.group.body.scrollHeight;
+      const messages = document.getElementById('messages');
+      messages.scrollTop = messages.scrollHeight;
+    }
+
     function collapseLoopContainer() {
       if (currentLoopContainer) {
         currentLoopContainer.root.classList.add('collapsed');
@@ -690,6 +746,34 @@
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    function formatThinkingBlocks(blocks) {
+      if (!blocks || !blocks.length) return '[thinking]';
+      return blocks.map((block) => {
+        if (block.type === 'redacted_thinking') return '[redacted thinking]';
+        if (block.thinking) return block.thinking;
+        const copy = Object.assign({}, block);
+        delete copy.signature;
+        return '[' + (copy.type || 'thinking') + '] ' + JSON.stringify(copy);
+      }).join('\n\n');
+    }
+
+    function formatError(data) {
+      if (data && typeof data === 'object') {
+        const type = data.type || 'Error';
+        const message = data.message || 'Unknown error';
+        return type + ': ' + message;
+      }
+      return 'Error: ' + (data || 'Unknown error');
+    }
+
+    function onSendButtonClick() {
+      if (processing) {
+        stopAgent();
+      } else {
+        sendMessage();
+      }
     }
 
     function sendMessage() {
@@ -710,15 +794,24 @@
       ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId }));
     }
 
+    function stopAgent() {
+      if (!ws || ws.readyState !== WebSocket.OPEN || !processing) return;
+      setStatus('processing', 'Stopping...');
+      ws.send(JSON.stringify({ action: 'stop' }));
+    }
+
     function onKeyDown(e) {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
+        if (processing) return;
         sendMessage();
       }
     }
 
     function updateSendButton() {
-      document.getElementById('send-btn').disabled = processing || !ws || ws.readyState !== WebSocket.OPEN;
+      const btn = document.getElementById('send-btn');
+      btn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
+      btn.textContent = processing ? 'Stop' : 'Send';
     }
 
     function compactSession() {

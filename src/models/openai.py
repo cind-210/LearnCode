@@ -9,7 +9,7 @@ import asyncio
 import json
 import os
 import random
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
@@ -136,7 +136,11 @@ class OpenAIModelAdapter(ModelAdapter):
         self._tools = tools
         self._get_runtime_config = get_runtime_config or load_runtime_config
 
-    async def next(self, messages: list[ChatMessage]) -> AgentStep:
+    async def next(
+        self,
+        messages: list[ChatMessage],
+        on_delta: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
+    ) -> AgentStep:
         runtime = await self._get_runtime_config()
         openai_msgs = _to_openai_messages(messages)
         url = runtime.base_url

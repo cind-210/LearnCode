@@ -70,6 +70,17 @@ Type a message in the web page and send it. LearnCode will create or reuse a ses
 
 The Compact button summarizes earlier context in the current session so later model requests can carry a shorter conversation. It is only an optional manual action; even if you do not click it, the backend can still compress context automatically according to its context-length rules.
 
+<details>
+<summary>Changelog</summary>
+
+### 2026-07-13
+
+- Thinking blocks are saved as context and displayed in the frontend Agent Loop.
+- Stop now terminates the current turn and keeps tool calls structurally closed with matching tool results.
+- Anthropic model requests now use streaming to make network stalls easier to detect than with non-streaming requests.
+
+</details>
+
 ## Implemented Features
 
 - Web chat interface served by FastAPI.

@@ -6,6 +6,7 @@ Mirrors src/mock-model.ts from the TypeScript version.
 from __future__ import annotations
 
 import time
+from typing import Any, Awaitable, Callable, Optional
 
 from ..loop.messages import AgentStep, ChatMessage, ModelAdapter, ToolCall
 
@@ -32,7 +33,11 @@ def _extract_latest_assistant_call(messages: list[ChatMessage]) -> Optional[str]
 
 
 class MockModelAdapter(ModelAdapter):
-    async def next(self, messages: list[ChatMessage]) -> AgentStep:
+    async def next(
+        self,
+        messages: list[ChatMessage],
+        on_delta: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
+    ) -> AgentStep:
         tool_msg = _last_tool_message(messages)
         if tool_msg and tool_msg.role == "tool_result":
             last_call = _extract_latest_assistant_call(messages)

@@ -134,7 +134,8 @@ def _build_mcp_tool_definition(mcp_tool: dict, conn: McpConnection) -> ToolDefin
             text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
             return ToolResult(ok=True, output="\n".join(text_parts))
         except Exception as e:
-            return ToolResult(ok=False, output=str(e))
+            message = str(e) or repr(e) or e.__class__.__name__
+            return ToolResult(ok=False, output=message)
 
     wrapped_name = f"mcp__{_sanitize_tool_name_part(conn.server_id)}__{_sanitize_tool_name_part(original_name)}"
     return ToolDefinition(

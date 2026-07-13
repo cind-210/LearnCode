@@ -5,6 +5,7 @@ Mirrors the main agent loop from the TypeScript version.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Awaitable
@@ -153,38 +154,52 @@ async def _handle_tool_calls(
     registry: ToolRegistry,
     permission_resolver: PermissionResolver,
     context: ToolContext,
+    state_messages: list[ChatMessage],
     on_permission_request: Optional[Callable] = None,
+    on_messages_changed: Optional[Callable[[list[ChatMessage]], Awaitable[None]]] = None,
     replacement_state: Optional[ContentReplacementState] = None,
-) -> list[ChatMessage]:
-    messages: list[ChatMessage] = []
+) -> None:
     executed_results: list[dict] = []
+    result_slots: list[tuple[int, ToolCall]] = []
 
     if replacement_state is None:
         replacement_state = ContentReplacementState()
 
     for call in calls:
-        request = PermissionRequest(
-            tool_name=call.tool_name,
-            input=call.input,
-            message=f"Tool '{call.tool_name}' wants to run",
-        )
-        response = await permission_resolver.check(request)
+        state_messages.append(_build_tool_call_message(call))
+        if on_messages_changed:
+            await on_messages_changed(state_messages)
+        try:
+            request = PermissionRequest(
+                tool_name=call.tool_name,
+                input=call.input,
+                message=f"Tool '{call.tool_name}' wants to run",
+            )
+            response = await permission_resolver.check(request)
 
-        if response.decision == PermissionDecision.DENY or response.decision == PermissionDecision.NEVER:
-            messages.append(_build_tool_call_message(call))
-            messages.append(_build_tool_result_message(
+            if response.decision == PermissionDecision.DENY or response.decision == PermissionDecision.NEVER:
+                state_messages.append(_build_tool_result_message(
+                    call,
+                    ToolResult(ok=False, output=f"Permission denied: {response.reason or 'Tool execution blocked'}"),
+                ))
+                if on_messages_changed:
+                    await on_messages_changed(state_messages)
+                if response.decision == PermissionDecision.NEVER:
+                    permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.NEVER)
+                continue
+
+            if on_permission_request and response.decision == PermissionDecision.ALLOW:
+                await on_permission_request(call.tool_name, "allow")
+
+            result = await registry.execute(call.tool_name, call.input, context)
+        except asyncio.CancelledError:
+            state_messages.append(_build_tool_result_message(
                 call,
-                ToolResult(ok=False, output=f"Permission denied: {response.reason or 'Tool execution blocked'}"),
+                ToolResult(ok=False, output=""),
             ))
-            if response.decision == PermissionDecision.NEVER:
-                permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.NEVER)
-            continue
-
-        if on_permission_request and response.decision == PermissionDecision.ALLOW:
-            await on_permission_request(call.tool_name, "allow")
-
-        messages.append(_build_tool_call_message(call))
-        result = await registry.execute(call.tool_name, call.input, context)
+            if on_messages_changed:
+                await on_messages_changed(state_messages)
+            raise
 
         raw_output = result.output if isinstance(result.output, str) else str(result.output)
         truncated = replace_large_tool_result(
@@ -197,19 +212,24 @@ async def _handle_tool_calls(
             "content": truncated,
             "is_error": not result.ok,
         })
+        result_slots.append((len(state_messages), call))
+        state_messages.append(_build_tool_result_message(
+            call,
+            ToolResult(ok=result.ok, output=truncated),
+        ))
+        if on_messages_changed:
+            await on_messages_changed(state_messages)
 
     budgeted = apply_tool_result_budget(executed_results, replacement_state)
 
     for entry in budgeted:
-        for call in calls:
+        for result_index, call in result_slots:
             if call.id == entry["tool_use_id"]:
-                messages.append(_build_tool_result_message(
+                state_messages[result_index] = _build_tool_result_message(
                     call,
                     ToolResult(ok=not entry.get("is_error", False), output=entry["content"]),
-                ))
+                )
                 break
-
-    return messages
 
 
 async def _apply_compression(
@@ -257,22 +277,26 @@ async def run_agent_loop(
     config: AgentLoopConfig,
     state: Optional[AgentLoopState] = None,
     on_step: Optional[Callable[[AgentStep], Awaitable[None]]] = None,
+    on_delta: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
     on_permission_request: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    on_messages_changed: Optional[Callable[[list[ChatMessage]], Awaitable[None]]] = None,
+    user_already_appended: bool = False,
 ) -> AgentLoopResult:
     if state is None:
         state = AgentLoopState()
 
     state.auto_compact_result = None
 
-    if not state.messages:
+    if not state.messages or state.messages[0].role != "system":
         skills = get_default_skill_registry()
-        state.messages.append(_build_system_message(
+        state.messages.insert(0, _build_system_message(
             workspace=config.workspace,
             skills_prompt=skills.build_system_prompt(),
             permission_mode=config.permission_mode.value,
         ))
 
-    state.messages.append(ChatMessage.user(user_input))
+    if not user_already_appended:
+        state.messages.append(ChatMessage.user(user_input))
     state.turn += 1
 
     builtin_registry = build_builtin_registry()
@@ -303,7 +327,7 @@ async def run_agent_loop(
             await _apply_compression(state, model_adapter, config.model or runtime_config.model)
             model_view = project_collapsed_view(state.messages, state.collapse_state)
 
-            step = await model_adapter.next(model_view)
+            step = await model_adapter.next(model_view, on_delta=on_delta)
 
             if on_step:
                 await on_step(step)
@@ -324,12 +348,13 @@ async def run_agent_loop(
                 assistant_msgs = _build_assistant_message(step)
                 state.messages.extend(assistant_msgs)
 
-                tool_messages = await _handle_tool_calls(
+                await _handle_tool_calls(
                     step.calls, registry, permission_resolver, tool_context,
+                    state_messages=state.messages,
                     on_permission_request=on_permission_request,
+                    on_messages_changed=on_messages_changed,
                     replacement_state=replacement_state,
                 )
-                state.messages.extend(tool_messages)
                 state.turn += 1
                 continue
 

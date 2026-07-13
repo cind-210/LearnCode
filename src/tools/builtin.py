@@ -23,6 +23,10 @@ def _resolve_path(path: str, workspace: str) -> str:
     return str((Path(workspace) / p).resolve())
 
 
+def _error_text(error: Exception) -> str:
+    return str(error) or repr(error) or error.__class__.__name__
+
+
 async def _list_files(input: dict, context: ToolContext) -> ToolResult:
     path = input.get("path", ".")
     workspace = context.get("workspace", ".")
@@ -32,7 +36,7 @@ async def _list_files(input: dict, context: ToolContext) -> ToolResult:
         entries.sort()
         return ToolResult(ok=True, output="\n".join(entries))
     except Exception as e:
-        return ToolResult(ok=False, output=str(e))
+        return ToolResult(ok=False, output=_error_text(e))
 
 
 async def _read_file(input: dict, context: ToolContext) -> ToolResult:
@@ -55,7 +59,7 @@ async def _read_file(input: dict, context: ToolContext) -> ToolResult:
     except FileNotFoundError:
         return ToolResult(ok=False, output=f"File not found: {resolved}")
     except Exception as e:
-        return ToolResult(ok=False, output=str(e))
+        return ToolResult(ok=False, output=_error_text(e))
 
 
 async def _write_file(input: dict, context: ToolContext) -> ToolResult:
@@ -69,7 +73,7 @@ async def _write_file(input: dict, context: ToolContext) -> ToolResult:
             f.write(content)
         return ToolResult(ok=True, output=f"File written: {resolved}")
     except Exception as e:
-        return ToolResult(ok=False, output=str(e))
+        return ToolResult(ok=False, output=_error_text(e))
 
 
 async def _edit_file(input: dict, context: ToolContext) -> ToolResult:
@@ -103,7 +107,7 @@ async def _edit_file(input: dict, context: ToolContext) -> ToolResult:
             f.write(modified)
         return ToolResult(ok=True, output=f"File edited: {resolved} ({count} occurrence(s) replaced)")
     except Exception as e:
-        return ToolResult(ok=False, output=str(e))
+        return ToolResult(ok=False, output=_error_text(e))
 
 
 async def _grep_files(input: dict, context: ToolContext) -> ToolResult:
@@ -132,7 +136,26 @@ async def _grep_files(input: dict, context: ToolContext) -> ToolResult:
             return ToolResult(ok=True, output=f"No matches for '{pattern}' in {resolved}")
         return ToolResult(ok=True, output="\n".join(results[:200]))
     except Exception as e:
-        return ToolResult(ok=False, output=str(e))
+        return ToolResult(ok=False, output=_error_text(e))
+
+
+def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    if os.name == "nt":
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode != 0:
+            proc.kill()
+    else:
+        proc.terminate()
+    transport = getattr(proc, "_transport", None)
+    if transport:
+        transport.close()
 
 
 async def _run_command(input: dict, context: ToolContext) -> ToolResult:
@@ -146,15 +169,20 @@ async def _run_command(input: dict, context: ToolContext) -> ToolResult:
             stderr=subprocess.PIPE,
             cwd=cwd,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            _terminate_process_tree(proc)
+            return ToolResult(ok=False, output=f"Command timed out after {timeout}s")
+        except asyncio.CancelledError:
+            _terminate_process_tree(proc)
+            raise
         output = stdout.decode("utf-8", errors="replace")
         if stderr:
             output += "\n[stderr]\n" + stderr.decode("utf-8", errors="replace")
         return ToolResult(ok=proc.returncode == 0, output=output.strip() or "(no output)")
-    except asyncio.TimeoutError:
-        return ToolResult(ok=False, output=f"Command timed out after {timeout}s")
     except Exception as e:
-        return ToolResult(ok=False, output=str(e))
+        return ToolResult(ok=False, output=_error_text(e))
 
 
 async def _ask_user(input: dict, context: ToolContext) -> ToolResult:
@@ -185,7 +213,7 @@ async def _web_fetch(input: dict, context: ToolContext) -> ToolResult:
             resp = await client.get(url, follow_redirects=True)
             return ToolResult(ok=True, output=resp.text[:10000])
     except Exception as e:
-        return ToolResult(ok=False, output=str(e))
+        return ToolResult(ok=False, output=_error_text(e))
 
 
 async def _web_search(input: dict, context: ToolContext) -> ToolResult:

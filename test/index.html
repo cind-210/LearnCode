@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>平方计算器</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        input {
+            padding: 10px;
+            font-size: 18px;
+            width: 200px;
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            outline: none;
+        }
+        input:focus {
+            border-color: #4a90d9;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 18px;
+            margin-left: 10px;
+            border: none;
+            background: #4a90d9;
+            color: white;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #357abd;
+        }
+        .result {
+            margin-top: 20px;
+            font-size: 24px;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>平方计算器</h2>
+        <div>
+            <input type="number" id="numberInput" placeholder="请输入一个数字">
+            <button onclick="calculateSquare()">计算平方</button>
+        </div>
+        <p class="result" id="result"></p>
+    </div>
+
+    <script>
+        function calculateSquare() {
+            const input = document.getElementById('numberInput').value;
+            const num = parseFloat(input);
+            const resultEl = document.getElementById('result');
+            
+            if (input === '') {
+                resultEl.textContent = '请输入一个数字';
+                resultEl.style.color = 'red';
+            } else if (isNaN(num)) {
+                resultEl.textContent = '请输入有效的数字';
+                resultEl.style.color = 'red';
+            } else {
+                const square = num * num;
+                resultEl.textContent = num + ' 的平方是：' + square;
+                resultEl.style.color = '#333';
+            }
+        }
+
+        // 支持回车键触发计算
+        document.getElementById('numberInput').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                calculateSquare();
+            }
+        });
+    </script>
+</body>
+</html>

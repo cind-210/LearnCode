@@ -6,7 +6,7 @@ Mirrors src/types.ts from the TypeScript version.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Protocol, Union
+from typing import Any, Awaitable, Callable, Literal, Optional, Protocol, Union
 
 # ---------------------------------------------------------------------------
 # Provider usage
@@ -168,7 +168,11 @@ class AgentStep:
 
 
 class ModelAdapter(Protocol):
-    async def next(self, messages: list[ChatMessage]) -> AgentStep: ...
+    async def next(
+        self,
+        messages: list[ChatMessage],
+        on_delta: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
+    ) -> AgentStep: ...
 
 
 # ---------------------------------------------------------------------------
