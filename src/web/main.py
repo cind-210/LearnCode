@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import sys
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,13 +18,15 @@ from fastapi.staticfiles import StaticFiles
 from ..loop.runner import (
     AgentLoopConfig,
     AgentLoopState,
+    extract_todos_from_messages,
     run_agent_loop,
     run_manual_compact,
 )
 from ..models.anthropic import AnthropicModelAdapter
 from ..models.openai import OpenAIModelAdapter
 from ..config.runtime import load_runtime_config
-from ..tools.permissions import PermissionMode
+from ..mcp.client import build_mcp_registry
+from ..tools.permissions import PermissionDecision, PermissionMode, PermissionRequest, PermissionResponse
 from ..sessions.store import (
     append_compact_boundary,
     cleanup_expired_sessions,
@@ -38,6 +41,7 @@ from ..sessions.store import (
     Session,
 )
 from ..tools.builtin import build_builtin_registry
+from ..tools.registry import ToolRegistry
 from ..loop.messages import ChatMessage, ModelAdapter
 
 app = FastAPI(title="LearnCode", version="1.0.0")
@@ -78,6 +82,10 @@ def _close_open_tool_calls(messages: list[ChatMessage]) -> None:
         ))
 
 
+def _session_todos(session: Optional[Session]) -> list[dict[str, Any]]:
+    return extract_todos_from_messages(session.messages) if session else []
+
+
 def _is_cjk_char(ch: str) -> bool:
     code = ord(ch)
     return (
@@ -105,12 +113,55 @@ def _validate_ai_session_title(title: str) -> Optional[str]:
     return None
 
 
-async def _get_model_adapter() -> ModelAdapter:
-    tools = build_builtin_registry()
+async def _get_model_adapter(tools: Optional[ToolRegistry] = None) -> ModelAdapter:
+    tools = tools or build_builtin_registry()
     runtime = await load_runtime_config()
     if runtime.provider == "openai":
         return OpenAIModelAdapter(tools)
     return AnthropicModelAdapter(tools)
+
+
+def _mcp_config_key(runtime: Any) -> str:
+    data = {
+        name: cfg.__dict__
+        for name, cfg in sorted(runtime.mcp_servers.items())
+    }
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, default=str)
+
+
+@dataclass
+class WebAppState:
+    tool_registry: Optional[ToolRegistry] = None
+    mcp_config_key: str = ""
+    mcp_servers: Optional[list[dict[str, Any]]] = None
+
+    async def ensure_tools(self) -> ToolRegistry:
+        runtime = await load_runtime_config()
+        next_key = _mcp_config_key(runtime)
+        if self.tool_registry is not None and self.mcp_config_key == next_key:
+            return self.tool_registry
+
+        await self.close()
+        builtin_registry = build_builtin_registry()
+        mcp_registry = None
+        if runtime.mcp_servers:
+            mcp_registry, _ = await build_mcp_registry(runtime.mcp_servers)
+
+        if mcp_registry is None:
+            self.tool_registry = builtin_registry
+            self.mcp_servers = []
+        else:
+            self.tool_registry = builtin_registry.merge(mcp_registry)
+            self.mcp_servers = [server.__dict__ for server in mcp_registry.get_mcp_servers()]
+        self.mcp_config_key = next_key
+        return self.tool_registry
+
+    async def close(self) -> None:
+        if self.tool_registry is not None:
+            await self.tool_registry.dispose()
+        self.tool_registry = None
+        self.mcp_servers = []
+        self.mcp_config_key = ""
 
 
 @app.get("/api/health")
@@ -161,6 +212,7 @@ async def api_get_session(session_id: str):
                 "timestamp": m.timestamp,
             }
             for m in session.messages
+            if m.role != "todo_reminder"
         ],
     }
 
@@ -175,7 +227,10 @@ async def websocket_endpoint(ws: WebSocket):
     running = False
     current_task: Optional[asyncio.Task] = None
     active_run_id = 0
+    permission_counter = 0
+    pending_permissions: dict[str, asyncio.Future] = {}
     send_lock = asyncio.Lock()
+    app_state = WebAppState()
 
     async def send_event(event_type: str, data: Any):
         async with send_lock:
@@ -230,11 +285,14 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_event("sessions", [{"id": s.id, "title": s.title, "updated_at": s.updated_at} for s in sessions])
                     state = AgentLoopState(messages=[first_user_message])
 
-                adapter = await _get_model_adapter()
+                tools = await app_state.ensure_tools()
+                await send_event("mcp_servers", app_state.mcp_servers or [])
+                adapter = await _get_model_adapter(tools)
 
                 config = AgentLoopConfig(
                     workspace=workspace,
                     permission_mode=PermissionMode.DEFAULT,
+                    permissions=session.permissions,
                 )
 
                 async def on_step(step):
@@ -263,6 +321,33 @@ async def websocket_endpoint(ws: WebSocket):
                     session.messages = messages
                     save_session(SESSION_DIR, session)
 
+                async def on_todos_changed(todos):
+                    if run_id != active_run_id:
+                        return
+                    await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": todos})
+
+                async def on_mcp_servers_changed(servers):
+                    if run_id != active_run_id:
+                        return
+                    await send_event("mcp_servers", servers)
+
+                async def on_permission_request(request: PermissionRequest) -> PermissionResponse:
+                    nonlocal permission_counter
+                    permission_counter += 1
+                    request_id = f"perm-{permission_counter}"
+                    future = asyncio.get_running_loop().create_future()
+                    pending_permissions[request_id] = future
+                    await send_event("permission_request", {
+                        "id": request_id,
+                        "tool_name": request.tool_name,
+                        "input": request.input,
+                        "message": request.message,
+                        "reason": request.reason,
+                    })
+                    response = await future
+                    pending_permissions.pop(request_id, None)
+                    return response
+
                 async def run_chat_task():
                     nonlocal running, current_task, session, state
                     try:
@@ -274,6 +359,10 @@ async def websocket_endpoint(ws: WebSocket):
                             on_step=on_step,
                             on_delta=on_delta,
                             on_messages_changed=on_messages_changed,
+                            on_todos_changed=on_todos_changed,
+                            on_mcp_servers_changed=on_mcp_servers_changed,
+                            on_permission_request=on_permission_request,
+                            tool_registry=tools,
                             user_already_appended=created_new_session,
                         )
                         if run_id != active_run_id:
@@ -311,21 +400,32 @@ async def websocket_endpoint(ws: WebSocket):
                             "session_id": session.meta.id,
                             "auto_name": created_new_session,
                         })
+                        await send_event("todos_updated", {"session_id": session.meta.id, "todos": _session_todos(session)})
                     except asyncio.CancelledError:
                         if run_id != active_run_id:
                             return
+                        for future in pending_permissions.values():
+                            if not future.done():
+                                future.cancel()
+                        pending_permissions.clear()
                         if session and state:
                             _close_open_tool_calls(state.messages)
                             session.messages = state.messages
                             save_session(SESSION_DIR, session)
+                        await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": _session_todos(session)})
                         await send_event("stopped", {"session_id": session.meta.id if session else None})
                     except Exception as e:
                         if run_id != active_run_id:
                             return
+                        for future in pending_permissions.values():
+                            if not future.done():
+                                future.cancel()
+                        pending_permissions.clear()
                         if session and state:
                             _close_open_tool_calls(state.messages)
                             session.messages = state.messages
                             save_session(SESSION_DIR, session)
+                        await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": _session_todos(session)})
                         _log_error(e)
                         await send_event("error", _error_payload(e))
                     finally:
@@ -336,14 +436,41 @@ async def websocket_endpoint(ws: WebSocket):
                 running = True
                 current_task = asyncio.create_task(run_chat_task())
 
+            elif action == "permission_response":
+                request_id = req.get("request_id", "")
+                future = pending_permissions.get(request_id)
+                if not future or future.done():
+                    await send_event("error", f"Unknown permission request: {request_id}")
+                    continue
+                raw_decision = req.get("decision", "deny")
+                decision = PermissionDecision(raw_decision)
+                tool_name = req.get("tool_name", "")
+                if session and tool_name:
+                    if decision == PermissionDecision.ALWAYS:
+                        session.permissions.allow_tool(tool_name)
+                        save_session(SESSION_DIR, session)
+                    elif decision == PermissionDecision.NEVER:
+                        session.permissions.deny_tool(tool_name)
+                        save_session(SESSION_DIR, session)
+                future.set_result(PermissionResponse(
+                    decision=decision,
+                    reason=req.get("reason", ""),
+                    apply_to_session=decision in (PermissionDecision.ALWAYS, PermissionDecision.NEVER),
+                ))
+
             elif action == "stop":
                 if current_task and not current_task.done():
                     active_run_id += 1
+                    for future in pending_permissions.values():
+                        if not future.done():
+                            future.cancel()
+                    pending_permissions.clear()
                     current_task.cancel()
                     if session and state:
                         _close_open_tool_calls(state.messages)
                         session.messages = state.messages
                         save_session(SESSION_DIR, session)
+                    await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": _session_todos(session)})
                     running = False
                     current_task = None
                     await send_event("stopped", {"session_id": session.meta.id if session else None})
@@ -442,11 +569,12 @@ async def websocket_endpoint(ws: WebSocket):
                             "id": session.meta.id,
                             "title": session.meta.title,
                             "message_count": len(transcript),
+                            "todos": extract_todos_from_messages(session.messages),
                             "messages": [
                                 {
                                     "role": m.role,
                                     "content": m.content,
-                                    "blocks": [b.__dict__ for b in (getattr(m, "blocks", None) or [])],
+                                    "blocks": m.blocks,
                                     "tool_name": m.tool_name,
                                     "input": m.input,
                                     "is_error": m.is_error,
@@ -459,6 +587,7 @@ async def websocket_endpoint(ws: WebSocket):
                 session = create_session(SESSION_DIR, workspace=APP_WORKSPACE, title="New Session")
                 state = AgentLoopState(messages=[])
                 await send_event("session_created", {"id": session.meta.id, "title": session.meta.title})
+                await send_event("todos_updated", {"session_id": session.meta.id, "todos": []})
                 sessions = list_sessions(SESSION_DIR)
                 await send_event("sessions", [{"id": s.id, "title": s.title, "updated_at": s.updated_at} for s in sessions])
 
@@ -469,6 +598,7 @@ async def websocket_endpoint(ws: WebSocket):
                     if forked:
                         session = forked
                         state = AgentLoopState(messages=forked.messages)
+                        await send_event("todos_updated", {"session_id": forked.meta.id, "todos": extract_todos_from_messages(forked.messages)})
                         await send_event("session_forked", {
                             "id": forked.meta.id,
                             "title": forked.meta.title,
@@ -495,6 +625,8 @@ async def websocket_endpoint(ws: WebSocket):
             await send_event("error", _error_payload(e))
         except Exception:
             pass
+    finally:
+        await app_state.close()
 
 
 if os.path.isdir(STATIC_DIR):

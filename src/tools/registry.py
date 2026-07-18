@@ -126,6 +126,15 @@ class ToolRegistry:
                 self._tools.append(tool)
                 existing.add(tool.name)
 
+    def filtered_by_sandbox(self, sandbox: Any) -> ToolRegistry:
+        filtered = ToolRegistry(
+            tools=[tool for tool in self._tools if sandbox.allows_tool_definition(tool.name)],
+            metadata=self._metadata,
+        )
+        for disposer in self._disposers:
+            filtered.add_disposer(disposer)
+        return filtered
+
     def merge(self, other: ToolRegistry) -> ToolRegistry:
         merged = ToolRegistry(
             tools=list(self._tools),

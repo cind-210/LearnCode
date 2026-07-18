@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from ..config.runtime import LEARN_CODE_PERMISSIONS_PATH
 from ..loop.messages import ChatMessage
 from ..context.token_estimator import CLEAR_MARKER
+from ..tools.permissions import PermissionRules, load_permission_rules
 
 
 MAX_TITLE_LENGTH = 60
@@ -37,6 +39,7 @@ class SessionMeta:
 class Session:
     meta: SessionMeta
     messages: list[ChatMessage] = field(default_factory=list)
+    permissions: PermissionRules = field(default_factory=PermissionRules)
 
     @property
     def id(self) -> str:
@@ -166,6 +169,7 @@ def _role_to_event_type(role: str) -> str:
         "context_summary": "summary",
         "snip_boundary": "snip_boundary",
         "microcompact_boundary": "microcompact_boundary",
+        "todo_reminder": "todo_reminder",
     }.get(role, "user")
 
 
@@ -205,6 +209,16 @@ def _read_events(path: str) -> list[dict[str, Any]]:
             parent_uuid = data.get("uuid", parent_uuid)
             events.append(data)
     return events
+
+
+def _permissions_from_events(events: list[dict[str, Any]]) -> PermissionRules:
+    permissions = PermissionRules()
+    for event in events:
+        if event.get("type") == "permissions":
+            raw = event.get("permissions", {})
+            if isinstance(raw, dict):
+                permissions = PermissionRules.from_dict(raw)
+    return permissions
 
 
 def _write_event(path: str, event: dict[str, Any]) -> None:
@@ -465,7 +479,11 @@ def _session_meta_from_file(session_dir: str, session_id: str) -> SessionMeta:
         title=_title_from_events(events) or legacy_title or f"Session {session_id}",
         created_at=int(stat.st_ctime * 1000),
         updated_at=int(stat.st_mtime * 1000),
-        message_count=sum(1 for event in events if isinstance(event.get("message"), dict)),
+        message_count=sum(
+            1 for event in events
+            if isinstance(event.get("message"), dict)
+            and event.get("type") != "todo_reminder"
+        ),
         workspace=workspace,
     )
 
@@ -480,7 +498,8 @@ def create_session(session_dir: str, workspace: str = "", title: str = "") -> Se
             created_at=now,
             updated_at=now,
             workspace=workspace,
-        )
+        ),
+        permissions=load_permission_rules(LEARN_CODE_PERMISSIONS_PATH),
     )
     if title:
         rename_session(session_dir, session_id, title, workspace=workspace, create_if_missing=True)
@@ -520,7 +539,11 @@ def load_session(session_dir: str, session_id: str) -> Optional[Session]:
         for message in (_unwrap_message(event) for event in reconstructed_events)
         if message is not None
     ]
-    return Session(meta=_session_meta_from_file(session_dir, session_id), messages=messages)
+    return Session(
+        meta=_session_meta_from_file(session_dir, session_id),
+        messages=messages,
+        permissions=_permissions_from_events(events),
+    )
 
 
 def load_transcript(session_dir: str, session_id: str) -> Optional[list[TranscriptItem]]:
@@ -545,6 +568,8 @@ def load_transcript(session_dir: str, session_id: str) -> Optional[list[Transcri
         if not isinstance(message, dict):
             continue
         chat_message = _deserialize_message(message, event_uuid=event.get("uuid", ""))
+        if chat_message.role == "todo_reminder":
+            continue
         items.append(TranscriptItem(
             role=chat_message.role,
             content=chat_message.content,
@@ -565,6 +590,19 @@ def save_session(session_dir: str, session: Session, already_saved_count: int = 
     parent_uuid = _last_event_uuid(existing_events)
     messages = session.messages[1:] if session.messages and session.messages[0].role == "system" else session.messages
     events: list[dict[str, Any]] = []
+    current_permissions = _permissions_from_events(existing_events)
+    if current_permissions.to_dict() != session.permissions.to_dict():
+        permission_uuid = str(uuid.uuid4())
+        events.append({
+            "type": "permissions",
+            "permissions": session.permissions.to_dict(),
+            "uuid": permission_uuid,
+            "timestamp": _now_iso(),
+            "session_id": session.meta.id,
+            "cwd": session.meta.workspace,
+            "parent_uuid": parent_uuid,
+        })
+        parent_uuid = permission_uuid
 
     for index, message in enumerate(messages):
         if message.id and message.id in existing_ids:
@@ -652,6 +690,7 @@ def fork_session(session_dir: str, session_id: str) -> Optional[Session]:
         return None
 
     new_session = create_session(session_dir, workspace=source.meta.workspace)
+    new_session.permissions = source.permissions.copy()
     new_session.messages = [ChatMessage.system("")] + source.messages
     save_session(session_dir, new_session)
 

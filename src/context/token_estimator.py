@@ -93,7 +93,7 @@ def _message_content_length(message: ChatMessage) -> int:
             return len(json.dumps(message.input))
         except Exception:
             return 0
-    if message.role in ("tool_result", "context_summary", "snip_boundary", "microcompact_boundary"):
+    if message.role in ("tool_result", "context_summary", "snip_boundary", "microcompact_boundary", "todo_reminder"):
         return len(message.content)
     return 0
 

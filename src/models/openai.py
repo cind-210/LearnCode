@@ -110,6 +110,8 @@ def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
             })
         elif m.role == "context_summary":
             converted.append({"role": "user", "content": f"[Context Summary]\n{m.content}"})
+        elif m.role == "todo_reminder":
+            converted.append({"role": "user", "content": m.content})
         elif m.role == "snip_boundary":
             converted.append({"role": "user", "content": "[Snipped earlier conversation segment]"})
 

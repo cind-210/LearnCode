@@ -21,6 +21,8 @@ def build_system_prompt(
         "Do not choose subjective preferences such as colors, visual style, copy tone, or naming unless the user explicitly told you to decide yourself.",
         "When using read_file, pay attention to the header fields. If it says TRUNCATED: yes, continue reading with a larger offset before concluding that the file itself is cut off.",
         "If the user names a skill or clearly asks for a workflow that matches a listed skill, call load_skill before following it.",
+        "Use TodoWrite to maintain a structured task list for complex multi-step work, explicit todo-list requests, or multiple user requirements. Skip TodoWrite for single trivial tasks or purely informational replies.",
+        "TodoWrite items must include content in imperative form, status as pending/in_progress/completed, and activeForm in present-continuous form. Keep exactly one item in_progress while actively working, mark items completed immediately after finishing them, and remove stale irrelevant items.",
         "Structured response protocol:",
         "- When you are still working and will continue with more tool calls, start your text with <progress>.",
         "- Only when the task is actually complete and you are ready to hand control back, start your text with <final>.",

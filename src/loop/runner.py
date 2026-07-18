@@ -19,20 +19,20 @@ from ..context.compact.context_collapse import (
     project_collapsed_view,
 )
 from ..context.compact.snip_compact import snip_compact_conversation
-from ..config.runtime import RuntimeConfig, load_runtime_config
+from ..config.runtime import LEARN_CODE_PERMISSIONS_PATH, RuntimeConfig, load_runtime_config
 from ..memory.store import MemoryStore, get_default_memory_store
 from ..mcp.client import build_mcp_registry
 from ..tools.permissions import (
-    PermissionConfig,
     PermissionDecision,
     PermissionMode,
     PermissionRequest,
     PermissionResolver,
-    PermissionResponse,
-    get_default_permission_resolver,
+    PermissionRules,
+    Sandbox,
+    load_permission_config,
 )
 from .prompt import build_system_prompt
-from ..skills.registry import get_default_skill_registry
+from ..skills.registry import refresh_default_skill_registry
 from ..tools.registry import ToolRegistry, ToolResult, ToolContext
 from ..tools.builtin import build_builtin_registry
 from ..loop.messages import (
@@ -56,12 +56,17 @@ from ..context.tool_result_storage import (
 )
 
 
+TODO_WRITE_TOOL_NAME = "TodoWrite"
+TODO_REMINDER_TURNS = 10
+
+
 @dataclass
 class AgentLoopConfig:
     workspace: str
     model: str = ""
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     additional_directories: list[str] = field(default_factory=list)
+    permissions: Optional[PermissionRules] = None
     max_turns: int = 100
     session_dir: str = "./sessions"
 
@@ -102,8 +107,9 @@ def _build_system_message(
     return ChatMessage.system(prompt)
 
 
-def _build_tool_context(workspace: str) -> ToolContext:
-    return {"workspace": workspace}
+def _sync_model_tools(model_adapter: ModelAdapter, registry: ToolRegistry) -> None:
+    if hasattr(model_adapter, "_tools"):
+        setattr(model_adapter, "_tools", registry)
 
 
 def _get_tool_call_id(call: ToolCall) -> str:
@@ -131,6 +137,84 @@ def _build_tool_result_message(
     )
 
 
+def extract_todos_from_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    for message in reversed(messages):
+        if message.role != "assistant_tool_call" or message.tool_name != TODO_WRITE_TOOL_NAME:
+            continue
+        input_value = message.input if isinstance(message.input, dict) else {}
+        todos = input_value.get("todos", [])
+        if not isinstance(todos, list):
+            return []
+        todo_items = [item for item in todos if isinstance(item, dict)]
+        if todo_items and all(item.get("status") == "completed" for item in todo_items):
+            return []
+        return todo_items
+    return []
+
+
+def _assistant_turn_counts_since_todo_write(messages: list[ChatMessage]) -> int:
+    turns = 0
+    counted_tool_round = False
+    for message in reversed(messages):
+        if message.role == "assistant_thinking":
+            continue
+        if message.role == "assistant_tool_call":
+            if message.tool_name == TODO_WRITE_TOOL_NAME:
+                return turns
+            if not counted_tool_round:
+                turns += 1
+                counted_tool_round = True
+            continue
+        counted_tool_round = False
+        if message.role in ("assistant", "assistant_progress"):
+            turns += 1
+    return turns
+
+
+def _assistant_turn_counts_since_todo_reminder(messages: list[ChatMessage]) -> int:
+    turns = 0
+    counted_tool_round = False
+    for message in reversed(messages):
+        if message.role == "assistant_thinking":
+            continue
+        if message.role == "todo_reminder":
+            return turns
+        if message.role == "assistant_tool_call":
+            if not counted_tool_round:
+                turns += 1
+                counted_tool_round = True
+            continue
+        counted_tool_round = False
+        if message.role in ("assistant", "assistant_progress"):
+            turns += 1
+    return turns
+
+
+def _build_todo_reminder(messages: list[ChatMessage]) -> Optional[ChatMessage]:
+    turns_since_write = _assistant_turn_counts_since_todo_write(messages)
+    if turns_since_write < TODO_REMINDER_TURNS:
+        return None
+    turns_since_reminder = _assistant_turn_counts_since_todo_reminder(messages)
+    if turns_since_reminder < TODO_REMINDER_TURNS:
+        return None
+
+    todos = extract_todos_from_messages(messages)
+    todo_lines = "\n".join(
+        f"{index + 1}. [{todo.get('status', 'pending')}] {todo.get('content', '')}"
+        for index, todo in enumerate(todos)
+    )
+    content = (
+        "<system-reminder>\n"
+        "The TodoWrite tool hasn't been used recently. If the current work would benefit from tracking progress, "
+        "use TodoWrite to update the task list. Also clean up the todo list if it has become stale and no longer "
+        "matches the current work. Only use it if relevant, and never mention this reminder to the user."
+    )
+    if todo_lines:
+        content += f"\n\nHere are the existing contents of your todo list:\n\n{todo_lines}"
+    content += "\n</system-reminder>"
+    return ChatMessage.todo_reminder(content)
+
+
 def _build_assistant_message(step: AgentStep) -> list[ChatMessage]:
     messages: list[ChatMessage] = []
     timestamp = int(time.time() * 1000)
@@ -155,57 +239,52 @@ async def _handle_tool_calls(
     permission_resolver: PermissionResolver,
     context: ToolContext,
     state_messages: list[ChatMessage],
-    on_permission_request: Optional[Callable] = None,
+    on_permission_request: Optional[Callable[[PermissionRequest], Awaitable[Any]]] = None,
     on_messages_changed: Optional[Callable[[list[ChatMessage]], Awaitable[None]]] = None,
+    on_todos_changed: Optional[Callable[[list[dict[str, Any]]], Awaitable[None]]] = None,
     replacement_state: Optional[ContentReplacementState] = None,
 ) -> None:
-    executed_results: list[dict] = []
-    result_slots: list[tuple[int, ToolCall]] = []
-
     if replacement_state is None:
         replacement_state = ContentReplacementState()
 
     for call in calls:
         state_messages.append(_build_tool_call_message(call))
-        if on_messages_changed:
-            await on_messages_changed(state_messages)
-        try:
-            request = PermissionRequest(
-                tool_name=call.tool_name,
-                input=call.input,
-                message=f"Tool '{call.tool_name}' wants to run",
-            )
-            response = await permission_resolver.check(request)
+    if on_messages_changed:
+        await on_messages_changed(state_messages)
 
-            if response.decision == PermissionDecision.DENY or response.decision == PermissionDecision.NEVER:
-                state_messages.append(_build_tool_result_message(
-                    call,
-                    ToolResult(ok=False, output=f"Permission denied: {response.reason or 'Tool execution blocked'}"),
-                ))
-                if on_messages_changed:
-                    await on_messages_changed(state_messages)
-                if response.decision == PermissionDecision.NEVER:
-                    permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.NEVER)
-                continue
-
-            if on_permission_request and response.decision == PermissionDecision.ALLOW:
-                await on_permission_request(call.tool_name, "allow")
-
-            result = await registry.execute(call.tool_name, call.input, context)
-        except asyncio.CancelledError:
-            state_messages.append(_build_tool_result_message(
-                call,
-                ToolResult(ok=False, output=""),
-            ))
-            if on_messages_changed:
-                await on_messages_changed(state_messages)
-            raise
-
-        raw_output = result.output if isinstance(result.output, str) else str(result.output)
-        truncated = replace_large_tool_result(
-            call.id, call.tool_name, raw_output, replacement_state,
+    async def execute_call(call: ToolCall) -> ToolResult:
+        request = PermissionRequest(
+            tool_name=call.tool_name,
+            input=call.input,
+            message=f"Tool '{call.tool_name}' wants to run",
         )
+        response = await permission_resolver.check(request)
 
+        if response.decision == PermissionDecision.DENY or response.decision == PermissionDecision.NEVER:
+            if response.decision == PermissionDecision.NEVER:
+                permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.NEVER)
+            return ToolResult(
+                ok=False,
+                output=f"Permission denied: {response.reason or 'Tool execution blocked'}",
+            )
+        if response.decision == PermissionDecision.ALWAYS:
+            permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.ALWAYS)
+
+        return await registry.execute(call.tool_name, call.input, context)
+
+    async def execute_index(index: int, call: ToolCall) -> tuple[int, ToolResult]:
+        return index, await execute_call(call)
+
+    tasks = [asyncio.create_task(execute_index(index, call)) for index, call in enumerate(calls)]
+    results: list[ToolResult | None] = [None] * len(calls)
+    executed_results: list[dict] = []
+    result_slots: list[tuple[int, ToolCall]] = []
+    appended_indices: set[int] = set()
+
+    def append_result(index: int, result: ToolResult) -> None:
+        call = calls[index]
+        raw_output = result.output if isinstance(result.output, str) else str(result.output)
+        truncated = replace_large_tool_result(call.id, call.tool_name, raw_output, replacement_state)
         executed_results.append({
             "tool_use_id": call.id,
             "tool_name": call.tool_name,
@@ -213,12 +292,33 @@ async def _handle_tool_calls(
             "is_error": not result.ok,
         })
         result_slots.append((len(state_messages), call))
-        state_messages.append(_build_tool_result_message(
-            call,
-            ToolResult(ok=result.ok, output=truncated),
-        ))
+        state_messages.append(_build_tool_result_message(call, ToolResult(ok=result.ok, output=truncated)))
+        appended_indices.add(index)
+
+    try:
+        for completed in asyncio.as_completed(tasks):
+            index, result = await completed
+            results[index] = result
+            append_result(index, result)
+            if on_messages_changed:
+                await on_messages_changed(state_messages)
+            if calls[index].tool_name == TODO_WRITE_TOOL_NAME and on_todos_changed:
+                await on_todos_changed(extract_todos_from_messages(state_messages))
+    except asyncio.CancelledError:
+        for task in tasks:
+            task.cancel()
+        for index, task in enumerate(tasks):
+            if task.done() and not task.cancelled():
+                done_index, done_result = task.result()
+                results[done_index] = done_result
+        for index, result in enumerate(results):
+            if result is None:
+                results[index] = ToolResult(ok=False, output="")
+            if index not in appended_indices:
+                append_result(index, results[index])
         if on_messages_changed:
             await on_messages_changed(state_messages)
+        raise
 
     budgeted = apply_tool_result_budget(executed_results, replacement_state)
 
@@ -230,6 +330,11 @@ async def _handle_tool_calls(
                     ToolResult(ok=not entry.get("is_error", False), output=entry["content"]),
                 )
                 break
+
+    if on_messages_changed:
+        await on_messages_changed(state_messages)
+    if any(call.tool_name == TODO_WRITE_TOOL_NAME for call in calls) and on_todos_changed:
+        await on_todos_changed(extract_todos_from_messages(state_messages))
 
 
 async def _apply_compression(
@@ -278,47 +383,74 @@ async def run_agent_loop(
     state: Optional[AgentLoopState] = None,
     on_step: Optional[Callable[[AgentStep], Awaitable[None]]] = None,
     on_delta: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
-    on_permission_request: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    on_permission_request: Optional[Callable[[PermissionRequest], Awaitable[Any]]] = None,
     on_messages_changed: Optional[Callable[[list[ChatMessage]], Awaitable[None]]] = None,
+    on_todos_changed: Optional[Callable[[list[dict[str, Any]]], Awaitable[None]]] = None,
+    on_mcp_servers_changed: Optional[Callable[[list[dict[str, Any]]], Awaitable[None]]] = None,
+    tool_registry: Optional[ToolRegistry] = None,
     user_already_appended: bool = False,
 ) -> AgentLoopResult:
     if state is None:
         state = AgentLoopState()
 
     state.auto_compact_result = None
+    permission_config = load_permission_config(LEARN_CODE_PERMISSIONS_PATH)
+    if config.permissions is not None:
+        permission_config.permission_rules = config.permissions.copy()
+    if config.permission_mode != PermissionMode.DEFAULT:
+        permission_config.mode = config.permission_mode
+    elif permission_config.mode == PermissionMode.DEFAULT:
+        permission_config.mode = config.permission_mode
+    permission_config.additional_directories.extend(config.additional_directories)
 
+    skills = refresh_default_skill_registry(config.workspace)
+    system_message = _build_system_message(
+        workspace=config.workspace,
+        skills_prompt=skills.build_system_prompt(),
+        permission_mode=permission_config.mode.value,
+    )
     if not state.messages or state.messages[0].role != "system":
-        skills = get_default_skill_registry()
-        state.messages.insert(0, _build_system_message(
-            workspace=config.workspace,
-            skills_prompt=skills.build_system_prompt(),
-            permission_mode=config.permission_mode.value,
-        ))
+        state.messages.insert(0, system_message)
+    else:
+        state.messages[0] = system_message
 
     if not user_already_appended:
         state.messages.append(ChatMessage.user(user_input))
     state.turn += 1
 
-    builtin_registry = build_builtin_registry()
     runtime_config = state._runtime_config or await load_runtime_config()
 
-    mcp_registry = None
+    owns_registry = tool_registry is None
     mcp_connections = []
-    if runtime_config.mcp_servers:
-        mcp_registry, mcp_connections = await build_mcp_registry(runtime_config.mcp_servers)
-
-    if mcp_registry is None:
-        registry = builtin_registry
+    if tool_registry is not None:
+        registry = tool_registry
     else:
-        registry = builtin_registry.merge(mcp_registry)
+        builtin_registry = build_builtin_registry()
+        mcp_registry = None
+        if runtime_config.mcp_servers:
+            mcp_registry, mcp_connections = await build_mcp_registry(runtime_config.mcp_servers)
+            if mcp_registry and on_mcp_servers_changed:
+                await on_mcp_servers_changed([server.__dict__ for server in mcp_registry.get_mcp_servers()])
 
-    permission_config = PermissionConfig(
-        mode=config.permission_mode,
-        additional_directories=config.additional_directories,
+        if mcp_registry is None:
+            registry = builtin_registry
+        else:
+            registry = builtin_registry.merge(mcp_registry)
+
+    sandbox = Sandbox.from_config(
+        permission_config,
+        workspace=config.workspace,
     )
-    permission_resolver = PermissionResolver(config=permission_config)
+    registry = registry.filtered_by_sandbox(sandbox)
+    _sync_model_tools(model_adapter, registry)
+    permission_resolver = PermissionResolver(
+        config=permission_config,
+        permission_context=sandbox.permission_context,
+    )
+    if on_permission_request:
+        permission_resolver.set_callback(on_permission_request)
 
-    tool_context = _build_tool_context(config.workspace)
+    tool_context = sandbox.to_tool_context()
     memory = get_default_memory_store()
     replacement_state = ContentReplacementState()
 
@@ -326,6 +458,12 @@ async def run_agent_loop(
         while not state.should_stop and state.turn <= config.max_turns:
             await _apply_compression(state, model_adapter, config.model or runtime_config.model)
             model_view = project_collapsed_view(state.messages, state.collapse_state)
+            todo_reminder = _build_todo_reminder(model_view)
+            if todo_reminder:
+                state.messages.append(todo_reminder)
+                if on_messages_changed:
+                    await on_messages_changed(state.messages)
+                model_view = project_collapsed_view(state.messages, state.collapse_state)
 
             step = await model_adapter.next(model_view, on_delta=on_delta)
 
@@ -353,6 +491,7 @@ async def run_agent_loop(
                     state_messages=state.messages,
                     on_permission_request=on_permission_request,
                     on_messages_changed=on_messages_changed,
+                    on_todos_changed=on_todos_changed,
                     replacement_state=replacement_state,
                 )
                 state.turn += 1
@@ -365,11 +504,12 @@ async def run_agent_loop(
             state.stop_reason = "max_turns_exceeded"
 
     finally:
-        for conn in mcp_connections:
-            try:
-                await conn.close()
-            except Exception:
-                pass
+        if owns_registry:
+            for conn in mcp_connections:
+                try:
+                    await conn.close()
+                except Exception:
+                    pass
 
     return AgentLoopResult(
         messages=state.messages,

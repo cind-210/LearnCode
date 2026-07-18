@@ -5,9 +5,14 @@ Mirrors src/permissions.ts from the TypeScript version.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Union
+from pathlib import Path
+from typing import Any, Optional, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from ..agents.definition import AgentDefinition
 
 
 class PermissionMode(str, Enum):
@@ -28,6 +33,7 @@ class PermissionDecision(str, Enum):
     DENY = "deny"
     ALWAYS = "always"
     NEVER = "never"
+    ASK = "ask"
 
 
 @dataclass
@@ -37,22 +43,117 @@ class PermissionRule:
 
 
 @dataclass
+class PermissionRules:
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+    ask: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PermissionRules:
+        return cls(
+            allow=_string_list(data.get("allow", [])),
+            deny=_string_list(data.get("deny", [])),
+            ask=_string_list(data.get("ask", [])),
+        )
+
+    def to_dict(self) -> dict[str, list[str]]:
+        return {
+            "allow": list(self.allow),
+            "deny": list(self.deny),
+            "ask": list(self.ask),
+        }
+
+    def copy(self) -> PermissionRules:
+        return PermissionRules(
+            allow=list(self.allow),
+            deny=list(self.deny),
+            ask=list(self.ask),
+        )
+
+    def allow_tool(self, tool_name: str) -> None:
+        _add_rule(self.allow, tool_name)
+
+    def deny_tool(self, tool_name: str) -> None:
+        _add_rule(self.deny, tool_name)
+
+
+@dataclass
+class ToolPermissionContext:
+    mode: PermissionMode = PermissionMode.DEFAULT
+    additional_directories: list[str] = field(default_factory=list)
+    rules: PermissionRules = field(default_factory=PermissionRules)
+
+
+def _string_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, str)]
+
+
+def _add_rule(
+    rules: list[str],
+    rule: str,
+) -> None:
+    if rule not in rules:
+        rules.append(rule)
+
+
+def _rule_matches(tool_name: str, rule: str) -> bool:
+    if rule == tool_name or rule == "*":
+        return True
+    if rule.endswith("__*"):
+        return tool_name.startswith(rule[:-1])
+    if rule.startswith("Agent(") and rule.endswith(")"):
+        return tool_name == "Agent"
+    if rule.startswith("mcp__"):
+        parts = rule.split("__")
+        if len(parts) == 2:
+            return tool_name == rule or tool_name.startswith(f"{rule}__")
+    return False
+
+
+def _has_matching_rule(rules: list[str], tool_name: str) -> bool:
+    for rule in rules:
+        if _rule_matches(tool_name, rule):
+            return True
+    return False
+
+
+@dataclass
 class PermissionConfig:
     mode: PermissionMode = PermissionMode.DEFAULT
     additional_directories: list[str] = field(default_factory=list)
     rules: list[PermissionRule] = field(default_factory=list)
     deny_commands: list[str] = field(default_factory=list)
     ask_commands: list[str] = field(default_factory=list)
+    permission_rules: PermissionRules = field(default_factory=PermissionRules)
 
     @classmethod
     def from_runtime_config(cls, config: dict[str, Any]) -> PermissionConfig:
-        return PermissionConfig(
+        permission_config = PermissionConfig(
             mode=PermissionMode(config.get("mode", PermissionMode.DEFAULT.value)),
             additional_directories=config.get("additionalDirectories", []),
             rules=[PermissionRule(tool_name=r["toolName"], option=PermissionOption(r.get("option", "ask"))) for r in config.get("rules", [])],
             deny_commands=config.get("denyCommands", []),
             ask_commands=config.get("askCommands", []),
+            permission_rules=PermissionRules.from_dict(config),
         )
+        return permission_config
+
+
+def load_permission_config(path: Union[str, Path]) -> PermissionConfig:
+    file_path = Path(path)
+    if not file_path.exists():
+        return PermissionConfig()
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return PermissionConfig()
+    return PermissionConfig.from_runtime_config(data)
+
+
+def load_permission_rules(path: Union[str, Path]) -> PermissionRules:
+    return load_permission_config(path).permission_rules
 
 
 @dataclass
@@ -77,13 +178,36 @@ PermissionCallback = Any  # async (request: PermissionRequest) -> PermissionResp
 class PermissionResolver:
     config: PermissionConfig
     callback: Optional[PermissionCallback] = None
+    permission_context: Optional[ToolPermissionContext] = None
     _session_allow: set[str] = field(default_factory=set)
     _session_deny: set[str] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        if self.permission_context is None:
+            self.permission_context = ToolPermissionContext(
+                mode=self.config.mode,
+                additional_directories=list(self.config.additional_directories),
+                rules=self.config.permission_rules.copy(),
+            )
+            for rule in self.config.rules:
+                if rule.option == PermissionOption.ALWAYS:
+                    _add_rule(self.permission_context.rules.allow, rule.tool_name)
+                elif rule.option == PermissionOption.NEVER:
+                    _add_rule(self.permission_context.rules.deny, rule.tool_name)
+                else:
+                    _add_rule(self.permission_context.rules.ask, rule.tool_name)
 
     def set_callback(self, callback: PermissionCallback) -> None:
         self.callback = callback
 
     def _check_rule(self, tool_name: str) -> Optional[PermissionDecision]:
+        if self.permission_context:
+            if _has_matching_rule(self.permission_context.rules.deny, tool_name):
+                return PermissionDecision.DENY
+            if _has_matching_rule(self.permission_context.rules.allow, tool_name):
+                return PermissionDecision.ALLOW
+            if _has_matching_rule(self.permission_context.rules.ask, tool_name):
+                return PermissionDecision.ASK
         for rule in self.config.rules:
             if rule.tool_name == tool_name:
                 if rule.option == PermissionOption.ALWAYS:
@@ -113,6 +237,10 @@ class PermissionResolver:
 
         rule = self._check_rule(request.tool_name)
         if rule is not None:
+            if rule == PermissionDecision.ASK and self.callback:
+                return await self.callback(request)
+            if rule == PermissionDecision.ASK:
+                return PermissionResponse(decision=PermissionDecision.DENY, reason="Permission required but no permission handler is available")
             return PermissionResponse(decision=rule)
 
         if self.callback:
@@ -123,8 +251,88 @@ class PermissionResolver:
     def apply_session_decision(self, tool_name: str, decision: PermissionDecision) -> None:
         if decision == PermissionDecision.ALWAYS:
             self._session_allow.add(tool_name)
+            if self.permission_context:
+                _add_rule(self.permission_context.rules.allow, tool_name)
         elif decision == PermissionDecision.NEVER:
             self._session_deny.add(tool_name)
+            if self.permission_context:
+                _add_rule(self.permission_context.rules.deny, tool_name)
+
+
+@dataclass
+class Sandbox:
+    permission_context: ToolPermissionContext
+    workspace: str
+    agent_id: str = "main"
+    session_id: Optional[str] = None
+    app_state: Any = None
+
+    @classmethod
+    def from_config(
+        cls,
+        config: PermissionConfig,
+        workspace: str,
+        agent_id: str = "main",
+        session_id: Optional[str] = None,
+        app_state: Any = None,
+    ) -> Sandbox:
+        resolver = PermissionResolver(config=config)
+        return cls(
+            permission_context=resolver.permission_context or ToolPermissionContext(mode=config.mode),
+            workspace=workspace,
+            agent_id=agent_id,
+            session_id=session_id,
+            app_state=app_state,
+        )
+
+    def to_tool_context(self) -> dict[str, Any]:
+        return {
+            "workspace": self.workspace,
+            "sandbox": self,
+            "agent_id": self.agent_id,
+            "session_id": self.session_id,
+            "app_state": self.app_state,
+        }
+
+    def allows_tool_definition(self, tool_name: str) -> bool:
+        return not _has_matching_rule(self.permission_context.rules.deny, tool_name)
+
+    def fork_for_agent(
+        self,
+        agent_id: str,
+        allow_rules: Optional[list[str]] = None,
+        deny_rules: Optional[list[str]] = None,
+        permission_mode: Optional[PermissionMode] = None,
+    ) -> Sandbox:
+        permission_context = ToolPermissionContext(
+            mode=permission_mode or self.permission_context.mode,
+            additional_directories=list(self.permission_context.additional_directories),
+            rules=self.permission_context.rules.copy(),
+        )
+        for rule in allow_rules or []:
+            _add_rule(permission_context.rules.allow, rule)
+        for rule in deny_rules or []:
+            _add_rule(permission_context.rules.deny, rule)
+        return Sandbox(
+            permission_context=permission_context,
+            workspace=self.workspace,
+            agent_id=agent_id,
+            session_id=self.session_id,
+            app_state=self.app_state,
+        )
+
+    def fork_for_agent_definition(
+        self,
+        agent: AgentDefinition,
+        agent_id: Optional[str] = None,
+    ) -> Sandbox:
+        allow_rules = agent.tools if agent.tools and agent.tools != ["*"] else None
+        return self.fork_for_agent(
+            agent_id=agent_id or agent.name,
+            allow_rules=allow_rules,
+            deny_rules=agent.disallowed_tools,
+            permission_mode=agent.permission_mode,
+        )
 
 
 DEFAULT_PERMISSION_RESOLVER = PermissionResolver(config=PermissionConfig())

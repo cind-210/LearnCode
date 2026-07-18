@@ -107,6 +107,10 @@ class ChatMessage:
     def microcompact_boundary(cls, content: str, cleared_message_ids: list[str], removed_count: int, tokens_freed: int, timestamp: int, **kwargs: Any) -> ChatMessage:
         return cls(role="microcompact_boundary", content=content, cleared_message_ids=cleared_message_ids, removed_count=removed_count, tokens_freed=tokens_freed, timestamp=timestamp, **kwargs)
 
+    @classmethod
+    def todo_reminder(cls, content: str, **kwargs: Any) -> ChatMessage:
+        return cls(role="todo_reminder", content=content, **kwargs)
+
     # Convenience aliases
     @classmethod
     def tool_call(cls, tool_use_id: str, tool_name: str, input: Any, **kwargs: Any) -> ChatMessage:

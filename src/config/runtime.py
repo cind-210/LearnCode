@@ -136,7 +136,7 @@ async def read_settings_file(file_path: Path) -> MiniCodeSettings:
                 headers=cfg.get("headers"),
                 cwd=cfg.get("cwd"),
                 enabled=cfg.get("enabled", True),
-                protocol=cfg.get("protocol"),
+                protocol=cfg.get("protocol") or cfg.get("type"),
             )
             for name, cfg in mcp.items()
         }
@@ -165,7 +165,7 @@ async def read_mcp_config_file(file_path: Path) -> dict[str, McpServerConfig]:
                 headers=cfg.get("headers"),
                 cwd=cfg.get("cwd"),
                 enabled=cfg.get("enabled", True),
-                protocol=cfg.get("protocol"),
+                protocol=cfg.get("protocol") or cfg.get("type"),
             )
             for name, cfg in mcp.items()
         }

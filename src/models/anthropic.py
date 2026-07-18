@@ -125,6 +125,8 @@ def _to_anthropic_messages(messages: list[ChatMessage]) -> tuple[str, list[dict]
             _push("assistant", {"type": "tool_use", "id": m.tool_use_id, "name": m.tool_name, "input": m.input})
         elif m.role == "context_summary":
             _push("user", {"type": "text", "text": f"[Context Summary from earlier conversation]\n{m.content}"})
+        elif m.role == "todo_reminder":
+            _push("user", {"type": "text", "text": m.content})
         elif m.role == "snip_boundary":
             _push("user", {"type": "text", "text": (
                 "[Snipped earlier conversation segment]\n\n"

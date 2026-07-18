@@ -205,6 +205,30 @@ async def _load_skill(input: dict, context: ToolContext) -> ToolResult:
     )
 
 
+def _valid_todo_item(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("content"), str)
+        and item.get("content").strip() != ""
+        and item.get("status") in ("pending", "in_progress", "completed")
+        and isinstance(item.get("activeForm"), str)
+        and item.get("activeForm").strip() != ""
+    )
+
+
+async def _todo_write(input: dict, context: ToolContext) -> ToolResult:
+    todos = input.get("todos", [])
+    if not isinstance(todos, list):
+        return ToolResult(ok=False, output="todos must be a list.")
+    invalid = [index for index, item in enumerate(todos) if not _valid_todo_item(item)]
+    if invalid:
+        return ToolResult(ok=False, output=f"Invalid todo item at index {invalid[0]}.")
+    return ToolResult(
+        ok=True,
+        output="Todos have been modified successfully. Continue to use the todo list to track progress.",
+    )
+
+
 async def _web_fetch(input: dict, context: ToolContext) -> ToolResult:
     url = input.get("url", "")
     try:
@@ -327,6 +351,45 @@ def build_builtin_registry() -> ToolRegistry:
                 "required": ["name"],
             },
             run=_load_skill,
+        ),
+        ToolDefinition(
+            name="TodoWrite",
+            description=(
+                "Update the todo list for the current session. Use proactively for complex multi-step work, "
+                "when the user explicitly asks for a todo list, after receiving multiple instructions, before "
+                "starting work by marking one item in_progress, and after completing each task. Skip it for "
+                "single trivial or purely informational requests. Provide each item with content, status, and activeForm."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "todos": {
+                        "type": "array",
+                        "description": "The complete updated todo list.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": "string",
+                                    "description": "Imperative task description, e.g. Run tests.",
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "completed"],
+                                    "description": "Current task status.",
+                                },
+                                "activeForm": {
+                                    "type": "string",
+                                    "description": "Present-continuous form, e.g. Running tests.",
+                                },
+                            },
+                            "required": ["content", "status", "activeForm"],
+                        },
+                    },
+                },
+                "required": ["todos"],
+            },
+            run=_todo_write,
         ),
         ToolDefinition(
             name="web_fetch",
