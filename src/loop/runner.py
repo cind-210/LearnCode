@@ -262,13 +262,13 @@ async def _handle_tool_calls(
 
         if response.decision == PermissionDecision.DENY or response.decision == PermissionDecision.NEVER:
             if response.decision == PermissionDecision.NEVER:
-                permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.NEVER)
+                permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.NEVER, response.rules or request.suggested_rules)
             return ToolResult(
                 ok=False,
                 output=f"Permission denied: {response.reason or 'Tool execution blocked'}",
             )
         if response.decision == PermissionDecision.ALWAYS:
-            permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.ALWAYS)
+            permission_resolver.apply_session_decision(call.tool_name, PermissionDecision.ALWAYS, response.rules or request.suggested_rules)
 
         return await registry.execute(call.tool_name, call.input, context)
 

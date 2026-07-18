@@ -343,6 +343,8 @@ async def websocket_endpoint(ws: WebSocket):
                         "input": request.input,
                         "message": request.message,
                         "reason": request.reason,
+                        "segments": request.segments,
+                        "suggested_rules": request.suggested_rules,
                     })
                     response = await future
                     pending_permissions.pop(request_id, None)
@@ -445,17 +447,22 @@ async def websocket_endpoint(ws: WebSocket):
                 raw_decision = req.get("decision", "deny")
                 decision = PermissionDecision(raw_decision)
                 tool_name = req.get("tool_name", "")
+                raw_rules = req.get("rules", [])
+                rules = [rule for rule in raw_rules if isinstance(rule, str)] if isinstance(raw_rules, list) else []
                 if session and tool_name:
                     if decision == PermissionDecision.ALWAYS:
-                        session.permissions.allow_tool(tool_name)
+                        for rule in rules or [tool_name]:
+                            session.permissions.allow_tool(rule)
                         save_session(SESSION_DIR, session)
                     elif decision == PermissionDecision.NEVER:
-                        session.permissions.deny_tool(tool_name)
+                        for rule in rules or [tool_name]:
+                            session.permissions.deny_tool(rule)
                         save_session(SESSION_DIR, session)
                 future.set_result(PermissionResponse(
                     decision=decision,
                     reason=req.get("reason", ""),
                     apply_to_session=decision in (PermissionDecision.ALWAYS, PermissionDecision.NEVER),
+                    rules=rules,
                 ))
 
             elif action == "stop":

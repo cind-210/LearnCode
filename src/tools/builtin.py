@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..skills.registry import get_default_skill_registry
+from .command_permissions import powershell_args
 from .registry import ToolDefinition, ToolRegistry, ToolRegistryMetadata, ToolResult, ToolContext
 
 
@@ -163,12 +164,23 @@ async def _run_command(input: dict, context: ToolContext) -> ToolResult:
     cwd = input.get("cwd") or context.get("workspace", ".")
     timeout = input.get("timeout", 60)
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-        )
+        if os.name == "nt":
+            args = powershell_args(command)
+            if not args:
+                return ToolResult(ok=False, output="PowerShell is not available")
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=cwd,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=cwd,
+            )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:

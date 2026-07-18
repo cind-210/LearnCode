@@ -659,6 +659,7 @@
     let currentStreamEvent = null;
     let currentTodos = [];
     const pendingPermissionCards = new Map();
+    const pendingPermissionRules = new Map();
     const namingSessions = new Set();
 
     function connect() {
@@ -735,6 +736,7 @@
           processing = false;
           currentStreamEvent = null;
           pendingPermissionCards.clear();
+          pendingPermissionRules.clear();
           collapseLoopContainer();
           updateSendButton();
           if (data.session_id) {
@@ -747,6 +749,7 @@
           processing = false;
           currentStreamEvent = null;
           pendingPermissionCards.clear();
+          pendingPermissionRules.clear();
           collapseLoopContainer();
           updateSendButton();
           if (data && data.session_id) {
@@ -760,6 +763,7 @@
           processing = false;
           currentStreamEvent = null;
           pendingPermissionCards.clear();
+          pendingPermissionRules.clear();
           collapseLoopContainer();
           updateSendButton();
           setStatus('connected', 'Error');
@@ -786,6 +790,7 @@
           currentLoopContainer = null;
           currentStreamEvent = null;
           pendingPermissionCards.clear();
+          pendingPermissionRules.clear();
           renderTodos(data.todos || []);
           if (data.messages) {
             for (const m of data.messages) {
@@ -878,13 +883,18 @@
       const div = document.createElement('div');
       div.className = 'message tool';
       const inputText = JSON.stringify(data.input || {}, null, 2);
+      const segments = Array.isArray(data.segments) && data.segments.length
+        ? '<div class="permission-input">' + escapeHtml(data.segments.join('\n')) + '</div>'
+        : '';
       div.innerHTML =
         '<div class="avatar">?</div>' +
         '<div class="bubble">' +
         '<div class="permission-card" data-id="' + escapeHtml(data.id) + '" data-tool-name="' + escapeHtml(data.tool_name || '') + '">' +
         '<div class="permission-title">Permission required</div>' +
         '<div class="permission-meta">' + escapeHtml(data.message || ('Tool ' + (data.tool_name || '') + ' wants to run')) + '</div>' +
+        (data.reason ? '<div class="permission-meta">' + escapeHtml(data.reason) + '</div>' : '') +
         '<div class="permission-input">' + escapeHtml(inputText) + '</div>' +
+        segments +
         '<div class="permission-actions">' +
         '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'allow\')">Allow once</button>' +
         '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'always\')">Allow for session</button>' +
@@ -895,6 +905,7 @@
         '</div>';
       container.appendChild(div);
       pendingPermissionCards.set(data.id, div.querySelector('.permission-card'));
+      pendingPermissionRules.set(data.id, Array.isArray(data.suggested_rules) ? data.suggested_rules : []);
       container.scrollTop = container.scrollHeight;
       setStatus('processing', 'Waiting for permission...');
     }
@@ -903,13 +914,15 @@
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const card = pendingPermissionCards.get(id);
       const toolName = card ? (card.dataset.toolName || '') : '';
+      const rules = pendingPermissionRules.get(id) || [];
       if (card) {
         card.classList.add('resolved');
         const meta = card.querySelector('.permission-meta');
         if (meta) meta.textContent = meta.textContent + ' [' + decision + ']';
         pendingPermissionCards.delete(id);
+        pendingPermissionRules.delete(id);
       }
-      ws.send(JSON.stringify({ action: 'permission_response', request_id: id, decision: decision, tool_name: toolName }));
+      ws.send(JSON.stringify({ action: 'permission_response', request_id: id, decision: decision, tool_name: toolName, rules: rules }));
       setStatus('processing', 'Processing...');
     }
 

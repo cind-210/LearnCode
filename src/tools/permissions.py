@@ -11,6 +11,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING, Union
 
+from .command_permissions import (
+    RUN_COMMAND_TOOL,
+    command_prefix_rule,
+    command_rule,
+    parse_command,
+    run_command_rule_matches_segment,
+)
+
 if TYPE_CHECKING:
     from ..agents.definition import AgentDefinition
 
@@ -162,6 +170,8 @@ class PermissionRequest:
     input: Any
     message: str
     reason: str = ""
+    suggested_rules: list[str] = field(default_factory=list)
+    segments: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -169,6 +179,7 @@ class PermissionResponse:
     decision: PermissionDecision
     reason: str = ""
     apply_to_session: bool = False
+    rules: list[str] = field(default_factory=list)
 
 
 PermissionCallback = Any  # async (request: PermissionRequest) -> PermissionResponse
@@ -217,6 +228,58 @@ class PermissionResolver:
                 return None
         return None
 
+    def _check_run_command_segment(self, segment: str) -> Optional[PermissionDecision]:
+        if not self.permission_context:
+            return None
+        rules = self.permission_context.rules
+        for rule in rules.deny:
+            if run_command_rule_matches_segment(rule, segment):
+                return PermissionDecision.DENY
+        for rule in rules.allow:
+            if run_command_rule_matches_segment(rule, segment):
+                return PermissionDecision.ALLOW
+        for rule in rules.ask:
+            if run_command_rule_matches_segment(rule, segment):
+                return PermissionDecision.ASK
+        return None
+
+    async def _check_run_command(self, request: PermissionRequest) -> Optional[PermissionResponse]:
+        if request.tool_name != RUN_COMMAND_TOOL:
+            return None
+        command = ""
+        if isinstance(request.input, dict):
+            command = str(request.input.get("command", ""))
+        if not command.strip():
+            return PermissionResponse(decision=PermissionDecision.DENY, reason="Command is empty")
+
+        parsed = await parse_command(command)
+        request.segments = parsed.segments
+        if not parsed.valid:
+            request.reason = f"Command requires permission because it could not be parsed for {parsed.shell}: {parsed.reason}"
+            request.suggested_rules = [command_rule(command)]
+            if self.callback:
+                return await self.callback(request)
+            return PermissionResponse(decision=PermissionDecision.DENY, reason=request.reason)
+
+        if not parsed.segments:
+            return PermissionResponse(decision=PermissionDecision.ALLOW)
+
+        decisions = [self._check_run_command_segment(segment) for segment in parsed.segments]
+        if PermissionDecision.DENY in decisions:
+            denied = parsed.segments[decisions.index(PermissionDecision.DENY)]
+            return PermissionResponse(decision=PermissionDecision.DENY, reason=f"Command denied by rule: {denied}")
+        if all(decision == PermissionDecision.ALLOW for decision in decisions):
+            return PermissionResponse(decision=PermissionDecision.ALLOW)
+
+        request.reason = "Command requires permission for one or more shell segments."
+        request.suggested_rules = [
+            command_prefix_rule(segment) for segment, decision in zip(parsed.segments, decisions)
+            if decision != PermissionDecision.ALLOW
+        ]
+        if self.callback:
+            return await self.callback(request)
+        return PermissionResponse(decision=PermissionDecision.DENY, reason="Permission required but no permission handler is available")
+
     def _check_session(self, tool_name: str) -> Optional[PermissionDecision]:
         if tool_name in self._session_allow:
             return PermissionDecision.ALLOW
@@ -243,20 +306,32 @@ class PermissionResolver:
                 return PermissionResponse(decision=PermissionDecision.DENY, reason="Permission required but no permission handler is available")
             return PermissionResponse(decision=rule)
 
+        run_command = await self._check_run_command(request)
+        if run_command is not None:
+            return run_command
+
         if self.callback:
             return await self.callback(request)
 
         return PermissionResponse(decision=PermissionDecision.ALLOW)
 
-    def apply_session_decision(self, tool_name: str, decision: PermissionDecision) -> None:
+    def apply_session_decision(
+        self,
+        tool_name: str,
+        decision: PermissionDecision,
+        rules: Optional[list[str]] = None,
+    ) -> None:
+        effective_rules = rules or [tool_name]
         if decision == PermissionDecision.ALWAYS:
-            self._session_allow.add(tool_name)
             if self.permission_context:
-                _add_rule(self.permission_context.rules.allow, tool_name)
+                for rule in effective_rules:
+                    self._session_allow.add(rule)
+                    _add_rule(self.permission_context.rules.allow, rule)
         elif decision == PermissionDecision.NEVER:
-            self._session_deny.add(tool_name)
             if self.permission_context:
-                _add_rule(self.permission_context.rules.deny, tool_name)
+                for rule in effective_rules:
+                    self._session_deny.add(rule)
+                    _add_rule(self.permission_context.rules.deny, rule)
 
 
 @dataclass
