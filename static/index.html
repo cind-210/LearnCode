@@ -700,6 +700,8 @@
     let editingId = null;
     let currentLoopContainer = null;
     let currentStreamEvent = null;
+    let streamedThinkingThisStep = false;
+    let streamedTextThisStep = false;
     let currentTodos = [];
     const currentLoopToolEvents = new Map();
     const pendingPermissionCards = new Map();
@@ -753,11 +755,11 @@
       switch (type) {
         case 'step':
           currentStreamEvent = null;
-          if (data.thinking_blocks && data.thinking_blocks.length) {
+          if (!streamedThinkingThisStep && data.thinking_blocks && data.thinking_blocks.length) {
             appendLoopEvent('Thinking', formatThinkingBlocks(data.thinking_blocks), 'thinking');
           }
           if (data.type === 'tool_calls') {
-            if (data.content) {
+            if (!streamedTextThisStep && data.content) {
               appendLoopEvent('Assistant', data.content, 'assistant');
             }
             if (data.calls) {
@@ -768,13 +770,14 @@
               }
             }
           } else if (data.type === 'assistant' && data.kind === 'progress') {
-            if (data.content) {
+            if (!streamedTextThisStep && data.content) {
               appendLoopEvent('Assistant', data.content, 'assistant');
             }
-          } else if (data.type === 'assistant' && data.content) {
+          } else if (data.type === 'assistant' && data.content && !streamedTextThisStep) {
             collapseLoopContainer();
             addMessage('assistant', data.content);
           }
+          resetStreamRenderState();
           break;
         case 'delta':
           handleDelta(data);
@@ -785,6 +788,7 @@
         case 'done':
           processing = false;
           currentStreamEvent = null;
+          resetStreamRenderState();
           pendingPermissionCards.clear();
           pendingPermissionRules.clear();
           collapseLoopContainer();
@@ -798,6 +802,7 @@
         case 'stopped':
           processing = false;
           currentStreamEvent = null;
+          resetStreamRenderState();
           pendingPermissionCards.clear();
           pendingPermissionRules.clear();
           collapseLoopContainer();
@@ -812,6 +817,7 @@
           addMessage('error', formatError(data));
           processing = false;
           currentStreamEvent = null;
+          resetStreamRenderState();
           pendingPermissionCards.clear();
           pendingPermissionRules.clear();
           collapseLoopContainer();
@@ -848,6 +854,7 @@
           document.getElementById('messages').innerHTML = '';
           currentLoopContainer = null;
           currentStreamEvent = null;
+          resetStreamRenderState();
           currentLoopToolEvents.clear();
           pendingPermissionCards.clear();
           pendingPermissionRules.clear();
@@ -903,6 +910,7 @@
             document.getElementById('messages').innerHTML = '';
             currentLoopContainer = null;
             currentStreamEvent = null;
+            resetStreamRenderState();
             currentLoopToolEvents.clear();
             renderTodos([]);
             addMessage('compact', 'New session: ' + data.title);
@@ -1138,6 +1146,11 @@
       if (!data || (data.type !== 'text' && data.type !== 'thinking')) return;
       const kind = data.type === 'thinking' ? 'thinking' : 'assistant';
       const label = data.type === 'thinking' ? 'Thinking' : 'Assistant';
+      if (data.type === 'thinking') {
+        streamedThinkingThisStep = true;
+      } else {
+        streamedTextThisStep = true;
+      }
       if (!currentStreamEvent || currentStreamEvent.kind !== kind) {
         currentStreamEvent = appendStreamingLoopEvent(label, kind);
       }
@@ -1146,6 +1159,11 @@
       currentStreamEvent.group.body.scrollTop = currentStreamEvent.group.body.scrollHeight;
       const messages = document.getElementById('messages');
       messages.scrollTop = messages.scrollHeight;
+    }
+
+    function resetStreamRenderState() {
+      streamedThinkingThisStep = false;
+      streamedTextThisStep = false;
     }
 
     function collapseLoopContainer() {
@@ -1205,6 +1223,7 @@
         return;
       }
       collapseLoopContainer();
+      resetStreamRenderState();
       currentLoopToolEvents.clear();
       addMessage('user', text);
       input.value = '';
