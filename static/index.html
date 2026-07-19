@@ -440,6 +440,19 @@
       background: #f7f7f7;
     }
 
+    .loop-event.collapsible .loop-event-label {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .loop-event.collapsed .loop-event-label {
+      border-bottom: 0;
+    }
+
+    .loop-event.collapsed .loop-event-body {
+      display: none;
+    }
+
     .loop-event.assistant .loop-event-label {
       color: #b02a45;
     }
@@ -845,7 +858,7 @@
                 }
               } else if (m.role === 'tool_result') {
                 if (m.tool_name !== 'TodoWrite') {
-                  appendLoopEvent('Result: ' + (m.tool_name || ''), (m.is_error ? '[Error] ' : '') + (m.content || ''), 'tool');
+                  appendLoopEvent('Result: ' + (m.tool_name || ''), (m.is_error ? '[Error] ' : '') + (m.content || ''), 'tool', true);
                 }
               } else if (m.role === 'assistant_thinking') {
                 appendLoopEvent('Thinking', formatThinkingBlocks(m.blocks || []), 'thinking');
@@ -1045,15 +1058,23 @@
       return currentLoopContainer;
     }
 
-    function appendLoopEvent(label, content, kind) {
+    function appendLoopEvent(label, content, kind, collapsed) {
       const group = ensureLoopContainer();
       group.items += 1;
       group.count.textContent = group.items + (group.items === 1 ? ' item' : ' items');
       const item = document.createElement('div');
       item.className = 'loop-event ' + (kind || '');
+      if (collapsed) {
+        item.classList.add('collapsible', 'collapsed');
+      }
       const eventLabel = document.createElement('div');
       eventLabel.className = 'loop-event-label';
       eventLabel.textContent = label;
+      if (collapsed) {
+        eventLabel.addEventListener('click', () => {
+          item.classList.toggle('collapsed');
+        });
+      }
       const eventBody = document.createElement('div');
       eventBody.className = 'loop-event-body';
       eventBody.textContent = content;
