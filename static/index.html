@@ -180,7 +180,6 @@
 
     .session-item.child {
       margin-left: 18px;
-      color: #666;
     }
 
     .session-item.child .title {
@@ -194,6 +193,16 @@
       font-size: 16px;
       line-height: 1;
       text-align: center;
+    }
+
+    .session-toggle .chevron {
+      display: inline-block;
+      transform-origin: 50% 50%;
+      transition: transform 0.12s ease;
+    }
+
+    .session-toggle.expanded .chevron {
+      transform: rotate(90deg);
     }
 
     .session-item.active .session-toggle {
@@ -798,7 +807,11 @@
           updateSendButton();
           if (data.session_id) {
             sessionId = data.session_id;
-            listSessions();
+            if (data.auto_name) {
+              autoNameSession(data.session_id);
+            } else {
+              listSessions();
+            }
           }
           setStatus('connected', 'Ready');
           break;
@@ -907,9 +920,6 @@
             namingSessions.add(data.id);
           }
           upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
-          if (data.created_from_chat && data.naming) {
-            autoNameSession(data.id);
-          }
           if (!data.created_from_chat) {
             document.getElementById('messages').innerHTML = '';
             currentLoopContainer = null;
@@ -1395,7 +1405,7 @@
         const children = subsessionsByParent.get(s.id) || [];
         const parentActive = !readOnlySession && s.id === sessionId;
         let html = '<div class="session-item' + (parentActive ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
-          '<span class="session-toggle" onclick="toggleSubSessions(\'' + s.id + '\', event)">' + (expanded ? '&#8964;' : '&#8250;') + '</span>' +
+          '<span class="session-toggle' + (expanded ? ' expanded' : '') + '" onclick="toggleSubSessions(\'' + s.id + '\', event)"><span class="chevron">&#8250;</span></span>' +
           '<span class="title">' + escapeHtml(s.title || 'Untitled') + '</span>' +
           spinner +
           '<span class="actions">' +

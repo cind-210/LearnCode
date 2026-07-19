@@ -277,10 +277,12 @@ async def websocket_endpoint(ws: WebSocket):
                 workspace = APP_WORKSPACE
                 session_id = req.get("session_id")
                 created_new_session = False
+                should_auto_name = False
 
                 if session_id:
                     session = load_session(SESSION_DIR, session_id)
                     if session:
+                        should_auto_name = not any(m.role == "user" for m in session.messages)
                         state = AgentLoopState(messages=session.messages)
                     else:
                         await send_event("error", f"Session not found: {session_id}")
@@ -289,6 +291,7 @@ async def websocket_endpoint(ws: WebSocket):
                     ensure_general_purpose_character()
                     session = create_session(SESSION_DIR, workspace=workspace, title="New Session")
                     created_new_session = True
+                    should_auto_name = True
                     state = AgentLoopState(messages=[])
 
                 if created_new_session:
@@ -440,7 +443,7 @@ async def websocket_endpoint(ws: WebSocket):
                             "stop_reason": result.stop_reason,
                             "turn": result.turn,
                             "session_id": session.meta.id,
-                            "auto_name": created_new_session,
+                            "auto_name": should_auto_name,
                         })
                         await send_event("todos_updated", {"session_id": session.meta.id, "todos": _session_todos(session)})
                     except asyncio.CancelledError:
