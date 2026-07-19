@@ -87,7 +87,6 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 NEW_SUBSESSION_TOOL_NAME,
                 {
                     "name": "worker",
-                    "description": "Check tools",
                     "prompt": "System hint for worker.",
                     "message": "initial message",
                     "character": "general-purpose",
@@ -193,6 +192,38 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(loaded.session.permissions.ask, ["run_command(*)"])
             self.assertEqual(loaded.session.permissions.deny, ["write_file"])
 
+    async def test_new_subsession_requires_name_and_has_no_description_parameter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = str(Path(tmp) / ".sessions")
+            registry = build_builtin_registry()
+            registry.add_tools(build_subsession_tools([]))
+            runtime = SubSessionRuntime()
+
+            async def model_factory(tools: ToolRegistry) -> CapturingModelAdapter:
+                return CapturingModelAdapter(tools)
+
+            tool = registry.find(NEW_SUBSESSION_TOOL_NAME)
+            self.assertIsNotNone(tool)
+            self.assertEqual(tool.input_schema.get("required"), ["name"])
+            self.assertNotIn("description", tool.input_schema.get("properties", {}))
+
+            result = await registry.execute(
+                NEW_SUBSESSION_TOOL_NAME,
+                {"message": "missing name"},
+                {
+                    "workspace": tmp,
+                    "session_id": "parent-required-name",
+                    "tool_registry": registry,
+                    "model_adapter_factory": model_factory,
+                    "loop_config": AgentLoopConfig(workspace=tmp, session_id="parent-required-name", subsession_runtime=runtime, session_dir=session_dir),
+                    "characters": [],
+                    "subsession_runtime": runtime,
+                },
+            )
+
+            self.assertFalse(result.ok)
+            self.assertIn("requires 'name'", result.output)
+
     async def test_list_subsessions_includes_loaded_and_disk_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session_dir = str(Path(tmp) / ".sessions")
@@ -223,7 +254,6 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 NEW_SUBSESSION_TOOL_NAME,
                 {
                     "name": "alpha",
-                    "description": "First child task",
                     "message": "alpha prompt",
                 },
                 context,
@@ -232,7 +262,6 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 NEW_SUBSESSION_TOOL_NAME,
                 {
                     "name": "beta",
-                    "description": "Second child task",
                     "message": "beta prompt",
                 },
                 context,
@@ -245,8 +274,6 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(listed.ok)
             self.assertIn("alpha", listed.output)
             self.assertIn("beta", listed.output)
-            self.assertIn("First child task", listed.output)
-            self.assertIn("Second child task", listed.output)
             self.assertIn("idle-on-disk", listed.output)
 
     async def test_subsession_names_must_be_unique_within_parent(self) -> None:
@@ -454,7 +481,6 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 NEW_SUBSESSION_TOOL_NAME,
                 {
                     "name": "priority",
-                    "description": "Priority",
                     "message": "priority prompt",
                     "character": "worker",
                     "permissions": {
@@ -506,7 +532,6 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                     NEW_SUBSESSION_TOOL_NAME,
                     {
                         "name": name,
-                        "description": name,
                         "message": f"prompt {name}",
                         "character": "general-purpose",
                     },
@@ -563,7 +588,6 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 NEW_SUBSESSION_TOOL_NAME,
                 {
                     "name": "readerone",
-                    "description": "Read only",
                     "message": "show tools",
                     "character": "reader",
                 },

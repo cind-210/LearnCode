@@ -56,19 +56,15 @@ def build_new_subsession_tool(characters: list[Character] | None = None) -> Tool
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Optional name for the child session.",
-                },
-                "description": {
-                    "type": "string",
-                    "description": "A short 3-5 word description of the child session task.",
+                    "description": "Required unique child session name, at most 30 characters.",
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Optional session-specific system prompt addition layered on top of the character prompt.",
+                    "description": "Optional system-level instruction layered on top of the character prompt. Do not put the task request here.",
                 },
                 "message": {
                     "type": "string",
-                    "description": "Optional first user message to send to the child session. If empty, the child session is created idle without running its loop.",
+                    "description": "Optional first task/request message to send to the child session. If empty, the child session is created idle without running its loop.",
                 },
                 "character": {
                     "type": "string",
@@ -76,6 +72,7 @@ def build_new_subsession_tool(characters: list[Character] | None = None) -> Tool
                 },
                 "permissions": _permissions_schema(),
             },
+            "required": ["name"],
         },
         run=_run_new_subsession_tool,
     )
@@ -184,15 +181,16 @@ async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolRes
     workspace = str(context.get("workspace") or ".")
     sub_registry = _registry_for_subsession(registry, character)
     child_permissions = _child_permissions(config.permissions, character, input.get("permissions"))
-    description = _optional_str(input.get("description")) or ""
-    name = _optional_str(input.get("name")) or (character.name if character else "subsession")
+    name = _optional_str(input.get("name"))
+    if not name:
+        return ToolResult(ok=False, output="NewSubSession requires 'name'.")
     name_error = _validate_new_subsession_name(runtime, config, str(context.get("session_id") or ""), name)
     if name_error:
         return ToolResult(ok=False, output=name_error)
     child, output = await runtime.create_session(
         parent_session_id=str(context.get("session_id") or ""),
         name=name,
-        description=description,
+        description="",
         character=character,
         prompt=prompt,
         message=message,
