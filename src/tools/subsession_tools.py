@@ -66,9 +66,9 @@ def build_new_subsession_tool(characters: list[Character] | None = None) -> Tool
                     "type": "string",
                     "description": "Optional session-specific system prompt addition layered on top of the character prompt.",
                 },
-                "request": {
+                "message": {
                     "type": "string",
-                    "description": "Optional first user request to send to the child session. If empty, the child session is created idle without running its loop.",
+                    "description": "Optional first user message to send to the child session. If empty, the child session is created idle without running its loop.",
                 },
                 "character": {
                     "type": "string",
@@ -100,9 +100,9 @@ def build_fork_subsession_tool(characters: list[Character] | None = None) -> Too
                     "type": "string",
                     "description": "Optional session-specific system prompt addition layered on top of the character prompt.",
                 },
-                "request": {
+                "message": {
                     "type": "string",
-                    "description": "Optional first user request to send after forking the parent context. If empty, the forked child session is created idle without running its loop.",
+                    "description": "Optional first user message to send after forking the parent context. If empty, the forked child session is created idle without running its loop.",
                 },
                 "character": {
                     "type": "string",
@@ -166,7 +166,7 @@ async def _run_list_subsessions_tool(input: dict, context: ToolContext) -> ToolR
 
 async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolResult:
     prompt = str(input.get("prompt") or "").strip()
-    request = str(input.get("request") or "").strip()
+    message = str(input.get("message") or "").strip()
 
     runtime = _runtime(context)
     registry = _registry(context)
@@ -195,7 +195,7 @@ async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolRes
         description=description,
         character=character,
         prompt=prompt,
-        request=request,
+        message=message,
         workspace=workspace,
         config=config,
         registry=sub_registry,
@@ -215,7 +215,7 @@ async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolRes
 
 async def _run_fork_subsession_tool(input: dict, context: ToolContext) -> ToolResult:
     prompt = str(input.get("prompt") or "").strip()
-    request = str(input.get("request") or "").strip()
+    message = str(input.get("message") or "").strip()
 
     source_messages = context.get("fork_source_messages")
     if not isinstance(source_messages, list):
@@ -250,7 +250,7 @@ async def _run_fork_subsession_tool(input: dict, context: ToolContext) -> ToolRe
         description=description,
         character=character,
         prompt=prompt,
-        request=request,
+        message=message,
         workspace=workspace,
         source_messages=source_messages,
         config=config,
@@ -419,7 +419,7 @@ def _new_subsession_description(characters: list[Character]) -> str:
 
 def _fork_subsession_description(characters: list[Character]) -> str:
     base = (
-        "Fork the current parent context into a child session, optionally sending it an initial request message. "
+        "Fork the current parent context into a child session, optionally sending it an initial message. "
         "Parameters match NewSubSession, but the child starts with the parent's current conversation context."
     )
     if not characters:

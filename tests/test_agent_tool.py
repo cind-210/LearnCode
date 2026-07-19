@@ -87,7 +87,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                     "name": "worker",
                     "description": "Check tools",
                     "prompt": "System hint for worker.",
-                    "request": "initial request",
+                    "message": "initial message",
                     "character": "general-purpose",
                 },
                 context,
@@ -95,7 +95,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(result.ok)
             self.assertIn("SubSession created: worker", result.output)
-            self.assertIn("last=initial request", result.output)
+            self.assertIn("last=initial message", result.output)
             self.assertNotIn("NewSubSession,", result.output)
             self.assertNotIn(",NewSubSession", result.output)
             self.assertEqual(len(runtime.list_sessions("parent-1")), 1)
@@ -109,7 +109,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 parent_session_id="parent-1",
             )
             self.assertIsNotNone(persisted)
-            self.assertTrue(any(message.content == "initial request" for message in persisted.messages))
+            self.assertTrue(any(message.content == "initial message" for message in persisted.messages))
             self.assertTrue((Path(session_dir) / "parent-1" / "subsessions" / "index.json").is_file())
             self.assertTrue((Path(session_dir) / "parent-1" / "subsessions" / f"{child_id}.jsonl").is_file())
 
@@ -222,7 +222,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "name": "alpha",
                     "description": "First child task",
-                    "request": "alpha prompt",
+                    "message": "alpha prompt",
                 },
                 context,
             )
@@ -231,7 +231,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "name": "beta",
                     "description": "Second child task",
-                    "request": "beta prompt",
+                    "message": "beta prompt",
                 },
                 context,
             )
@@ -269,12 +269,12 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
 
             first = await registry.execute(
                 NEW_SUBSESSION_TOOL_NAME,
-                {"name": "same", "request": "first"},
+                {"name": "same", "message": "first"},
                 context,
             )
             second = await registry.execute(
                 NEW_SUBSESSION_TOOL_NAME,
-                {"name": "same", "request": "second"},
+                {"name": "same", "message": "second"},
                 context,
             )
 
@@ -291,7 +291,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
             )
             other_parent = await registry.execute(
                 NEW_SUBSESSION_TOOL_NAME,
-                {"name": "same", "request": "other parent"},
+                {"name": "same", "message": "other parent"},
                 context,
             )
             self.assertTrue(other_parent.ok)
@@ -339,7 +339,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 NEW_SUBSESSION_TOOL_NAME,
                 {
                     "name": "a" * 31,
-                    "request": "too long",
+                    "message": "too long",
                 },
                 {
                     "workspace": tmp,
@@ -355,7 +355,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result.ok)
             self.assertIn("at most 30 characters", result.output)
 
-    async def test_fork_subsession_copies_parent_context_then_sends_request(self) -> None:
+    async def test_fork_subsession_copies_parent_context_then_sends_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session_dir = str(Path(tmp) / ".sessions")
             registry = build_builtin_registry()
@@ -387,7 +387,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                     "name": "forked",
                     "description": "Fork context",
                     "prompt": "Fork system hint.",
-                    "request": "continue from fork",
+                    "message": "continue from fork",
                     "permissions": {"allow": ["read_file"]},
                 },
                 context,
@@ -453,7 +453,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "name": "priority",
                     "description": "Priority",
-                    "request": "priority prompt",
+                    "message": "priority prompt",
                     "character": "worker",
                     "permissions": {
                         "allow": ["write_file"],
@@ -505,7 +505,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "name": name,
                         "description": name,
-                        "request": f"prompt {name}",
+                        "message": f"prompt {name}",
                         "character": "general-purpose",
                     },
                     context,
@@ -562,7 +562,7 @@ class AgentToolTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "name": "readerone",
                     "description": "Read only",
-                    "request": "show tools",
+                    "message": "show tools",
                     "character": "reader",
                 },
                 {

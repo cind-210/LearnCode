@@ -84,7 +84,7 @@ class SubSessionRuntime:
         description: str,
         character: Character | None,
         prompt: str,
-        request: str = "",
+        message: str = "",
         workspace: str,
         config: AgentLoopConfig,
         registry: ToolRegistry,
@@ -116,11 +116,11 @@ class SubSessionRuntime:
         self._add_link(config.session_dir, link)
         loaded = self._load_into_memory(link, child)
         output = "Created idle child session without running the loop."
-        if request.strip():
+        if message.strip():
             output = await self.send_message(
                 parent_session_id=parent_session_id,
                 target=child.meta.id,
-                message=request,
+                message=message,
                 character=character,
                 config=config,
                 registry=registry,
@@ -175,7 +175,7 @@ class SubSessionRuntime:
         description: str,
         character: Character | None,
         prompt: str,
-        request: str = "",
+        message: str = "",
         workspace: str,
         source_messages: list[ChatMessage],
         config: AgentLoopConfig,
@@ -209,11 +209,11 @@ class SubSessionRuntime:
         self._add_link(config.session_dir, link)
         loaded = self._load_into_memory(link, child)
         output = "Created idle forked child session without running the loop."
-        if request.strip():
+        if message.strip():
             output = await self.send_message(
                 parent_session_id=parent_session_id,
                 target=child.meta.id,
-                message=request,
+                message=message,
                 character=character,
                 config=config,
                 registry=registry,
