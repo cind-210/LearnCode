@@ -64,7 +64,7 @@ def _tool_result_looks_important_error(message: ChatMessage) -> bool:
 
 
 def _message_text_looks_important_error(message: ChatMessage) -> bool:
-    if message.role not in ("user", "assistant", "assistant_progress", "context_summary", "snip_boundary"):
+    if message.role not in ("user", "assistant", "assistant_final", "assistant_progress", "context_summary", "snip_boundary"):
         return False
     content = message.content.lower()
     return any(marker in content for marker in ERROR_MARKERS)

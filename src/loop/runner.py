@@ -185,7 +185,7 @@ def _assistant_turn_counts_since_todo_write(messages: list[ChatMessage]) -> int:
                 counted_tool_round = True
             continue
         counted_tool_round = False
-        if message.role in ("assistant", "assistant_progress"):
+        if message.role in ("assistant", "assistant_final", "assistant_progress"):
             turns += 1
     return turns
 
@@ -204,7 +204,7 @@ def _assistant_turn_counts_since_todo_reminder(messages: list[ChatMessage]) -> i
                 counted_tool_round = True
             continue
         counted_tool_round = False
-        if message.role in ("assistant", "assistant_progress"):
+        if message.role in ("assistant", "assistant_final", "assistant_progress"):
             turns += 1
     return turns
 
@@ -248,7 +248,7 @@ def _build_assistant_message(step: AgentStep) -> list[ChatMessage]:
         if step.kind == "progress":
             messages.append(ChatMessage.progress(content=content, provider_usage=step.usage, timestamp=timestamp))
         else:
-            messages.append(ChatMessage.assistant(content=content, provider_usage=step.usage, timestamp=timestamp))
+            messages.append(ChatMessage.assistant_final(content=content, provider_usage=step.usage, timestamp=timestamp))
     return messages
 
 

@@ -86,7 +86,7 @@ def _parse_assistant_text(content: str) -> tuple[str, Optional[str]]:
 
 
 def _is_assistant_continuation(message: ChatMessage) -> bool:
-    return message.role in ("assistant", "assistant_progress", "assistant_tool_call")
+    return message.role in ("assistant", "assistant_final", "assistant_progress", "assistant_tool_call")
 
 
 def _should_keep_thinking_message(messages: list[ChatMessage], index: int) -> bool:
@@ -117,7 +117,7 @@ def _to_anthropic_messages(messages: list[ChatMessage]) -> tuple[str, list[dict]
                 continue
             for block in (m.blocks or []):
                 _push("assistant", block.__dict__)
-        elif m.role in ("assistant", "assistant_progress"):
+        elif m.role in ("assistant", "assistant_final", "assistant_progress"):
             prefix = "<progress>\n" if m.role == "assistant_progress" else ""
             suffix = "\n</progress>" if m.role == "assistant_progress" else ""
             _push("assistant", {"type": "text", "text": f"{prefix}{m.content}{suffix}"})

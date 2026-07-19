@@ -448,7 +448,7 @@ class SubSessionRuntime:
 
 def _last_assistant_content(messages: list[ChatMessage]) -> str:
     for message in reversed(messages):
-        if message.role in ("assistant", "assistant_progress") and message.content:
+        if message.role in ("assistant", "assistant_final", "assistant_progress") and message.content:
             return message.content
     return ""
 

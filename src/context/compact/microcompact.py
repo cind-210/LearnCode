@@ -30,7 +30,7 @@ def _now_ms() -> int:
 
 def _last_assistant_timestamp(messages: list[ChatMessage]) -> int | None:
     for message in reversed(messages):
-        if message.role in ("assistant", "assistant_progress", "assistant_thinking") and message.timestamp:
+        if message.role in ("assistant", "assistant_final", "assistant_progress", "assistant_thinking") and message.timestamp:
             return message.timestamp
     return None
 

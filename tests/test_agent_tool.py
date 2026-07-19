@@ -9,7 +9,9 @@ from typing import Any, Awaitable, Callable, Optional
 from unittest.mock import patch
 
 from src.loop.messages import AgentStep, ChatMessage
-from src.loop.runner import AgentLoopConfig, _update_character_experiences
+from src.loop.runner import AgentLoopConfig, _build_assistant_message, _update_character_experiences
+from src.models.anthropic import _to_anthropic_messages
+from src.models.openai import _to_openai_messages
 from src.sessions.characters import Character, ensure_general_purpose_character, load_characters
 from src.sessions.subsessions import SubSessionRuntime
 from src.tools.permissions import PermissionRules
@@ -628,6 +630,24 @@ class SessionStoreTests(unittest.TestCase):
 
             self.assertEqual(len(history_lines), 2)
 
+    def test_final_assistant_reply_persists_as_assistant_final(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = str(Path(tmp) / ".sessions")
+            session = create_session(session_dir, workspace=tmp, title="Main")
+            session.messages = [ChatMessage.user("one", timestamp=1)]
+            session.messages.extend(_build_assistant_message(AgentStep(type="assistant", content="done")))
+            save_session(session_dir, session)
+
+            history_lines = (Path(session_dir) / session.id / "main.jsonl").read_text(encoding="utf-8").splitlines()
+            final_event = json.loads(history_lines[-1])
+            transcript = load_transcript(session_dir, session.id)
+
+            self.assertEqual(final_event["message"]["role"], "assistant_final")
+            self.assertEqual(final_event["type"], "assistant_final")
+            self.assertIsNotNone(transcript)
+            self.assertEqual(transcript[-1].role, "assistant_final")
+            self.assertEqual(transcript[-1].content, "done")
+
     def test_session_name_validation_uses_single_30_character_rule(self) -> None:
         self.assertIsNone(validate_session_name("a" * 30, "title"))
         self.assertIsNone(validate_session_name("中文" * 15, "title"))
@@ -656,6 +676,21 @@ class SessionStoreTests(unittest.TestCase):
 
             self.assertIsNotNone(transcript)
             self.assertEqual(transcript[0].content, "child message")
+
+    def test_model_adapters_send_assistant_final_as_assistant(self) -> None:
+        messages = [
+            ChatMessage.system("sys"),
+            ChatMessage.user("question"),
+            ChatMessage.assistant_final("answer"),
+        ]
+
+        openai_messages = _to_openai_messages(messages)
+        anthropic_system, anthropic_messages = _to_anthropic_messages(messages)
+
+        self.assertEqual(openai_messages[-1], {"role": "assistant", "content": "answer"})
+        self.assertEqual(anthropic_system, "sys")
+        self.assertEqual(anthropic_messages[-1]["role"], "assistant")
+        self.assertEqual(anthropic_messages[-1]["content"][0]["text"], "answer")
 
 
 class CharacterTests(unittest.IsolatedAsyncioTestCase):

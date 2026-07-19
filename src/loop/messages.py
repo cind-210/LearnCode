@@ -80,6 +80,10 @@ class ChatMessage:
         return cls(role="assistant", content=content, **kwargs)
 
     @classmethod
+    def assistant_final(cls, content: str, **kwargs: Any) -> ChatMessage:
+        return cls(role="assistant_final", content=content, **kwargs)
+
+    @classmethod
     def assistant_progress(cls, content: str, **kwargs: Any) -> ChatMessage:
         return cls(role="assistant_progress", content=content, **kwargs)
 

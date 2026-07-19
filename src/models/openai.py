@@ -80,7 +80,7 @@ def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
             continue
         elif m.role == "user":
             converted.append({"role": "user", "content": m.content})
-        elif m.role in ("assistant", "assistant_progress"):
+        elif m.role in ("assistant", "assistant_final", "assistant_progress"):
             content = m.content or ""
             if m.role == "assistant_progress":
                 content = f"<progress>\n{content}\n</progress>"

@@ -834,6 +834,9 @@
                 addMessage('user', m.content);
               } else if (m.role === 'assistant') {
                 if (m.content) addMessage('assistant', m.content);
+              } else if (m.role === 'assistant_final') {
+                collapseLoopContainer();
+                if (m.content) addMessage('assistant', m.content);
               } else if (m.role === 'assistant_progress') {
                 if (m.content) appendLoopEvent('Assistant', m.content, 'assistant');
               } else if (m.role === 'assistant_tool_call') {
