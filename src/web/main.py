@@ -277,12 +277,13 @@ async def websocket_endpoint(ws: WebSocket):
                 workspace = APP_WORKSPACE
                 session_id = req.get("session_id")
                 created_new_session = False
-                should_auto_name = bool(req.get("auto_name"))
+                should_auto_name_existing_session = False
+                user_already_appended = False
 
                 if session_id:
                     session = load_session(SESSION_DIR, session_id)
                     if session:
-                        should_auto_name = should_auto_name or not any(m.role == "user" for m in session.messages)
+                        should_auto_name_existing_session = not any(m.role == "user" for m in session.messages)
                         state = AgentLoopState(messages=session.messages)
                     else:
                         await send_event("error", f"Session not found: {session_id}")
@@ -291,7 +292,6 @@ async def websocket_endpoint(ws: WebSocket):
                     ensure_general_purpose_character()
                     session = create_session(SESSION_DIR, workspace=workspace, title="New Session")
                     created_new_session = True
-                    should_auto_name = True
                     state = AgentLoopState(messages=[])
 
                 if created_new_session:
@@ -301,10 +301,23 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_event("session_created", {
                         "id": session.meta.id,
                         "title": session.meta.title,
+                        "created_from_chat": True,
+                        "naming": True,
                     })
                     sessions = list_sessions(SESSION_DIR)
                     await send_event("sessions", [{"id": s.id, "title": s.title, "updated_at": s.updated_at} for s in sessions])
                     state = AgentLoopState(messages=[first_user_message])
+                    user_already_appended = True
+                elif should_auto_name_existing_session:
+                    first_user_message = ChatMessage.user(message)
+                    session.messages = [*session.messages, first_user_message]
+                    save_session(SESSION_DIR, session)
+                    state = AgentLoopState(messages=session.messages)
+                    user_already_appended = True
+                    await send_event("session_naming_started", {
+                        "id": session.meta.id,
+                        "title": session.meta.title,
+                    })
 
                 tools = await app_state.ensure_tools()
                 await send_event("mcp_servers", app_state.mcp_servers or [])
@@ -406,7 +419,7 @@ async def websocket_endpoint(ws: WebSocket):
                             on_mcp_servers_changed=on_mcp_servers_changed,
                             on_permission_request=on_permission_request,
                             tool_registry=tools,
-                            user_already_appended=created_new_session,
+                            user_already_appended=user_already_appended,
                         )
                         if run_id != active_run_id:
                             return
@@ -441,7 +454,6 @@ async def websocket_endpoint(ws: WebSocket):
                             "stop_reason": result.stop_reason,
                             "turn": result.turn,
                             "session_id": session.meta.id,
-                            "auto_name": should_auto_name,
                         })
                         await send_event("todos_updated", {"session_id": session.meta.id, "todos": _session_todos(session)})
                     except asyncio.CancelledError:

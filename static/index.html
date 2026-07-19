@@ -187,8 +187,8 @@
     }
 
     .session-toggle {
-      width: 24px;
-      height: 24px;
+      width: 28px;
+      height: 28px;
       flex-shrink: 0;
       color: #999;
       display: flex;
@@ -197,17 +197,22 @@
     }
 
     .session-toggle .chevron {
-      width: 10px;
-      height: 10px;
-      border-right: 2px solid currentColor;
-      border-bottom: 2px solid currentColor;
+      width: 18px;
+      height: 18px;
       transform-origin: 50% 50%;
-      transform: rotate(-45deg);
       transition: transform 0.12s ease;
     }
 
     .session-toggle.expanded .chevron {
-      transform: rotate(45deg);
+      transform: rotate(90deg);
+    }
+
+    .session-toggle .chevron polyline {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
 
     .session-item.active .session-toggle {
@@ -721,11 +726,9 @@
     const pendingPermissionCards = new Map();
     const pendingPermissionRules = new Map();
     const namingSessions = new Set();
-    const sessionsWithoutUserMessages = new Set();
     const expandedSessions = new Set();
     const subsessionsByParent = new Map();
     let lastSessions = [];
-    let pendingCreatedSessionAutoName = false;
 
     function connect() {
       setLoading(true);
@@ -814,12 +817,7 @@
           updateSendButton();
           if (data.session_id) {
             sessionId = data.session_id;
-            sessionsWithoutUserMessages.delete(data.session_id);
-            if (data.auto_name) {
-              autoNameSession(data.session_id);
-            } else {
-              listSessions();
-            }
+            listSessions();
           }
           setStatus('connected', 'Ready');
           break;
@@ -875,12 +873,6 @@
           readOnlySession = !!data.read_only;
           viewSessionId = data.id;
           viewParentSessionId = data.parent_session_id || null;
-          const hasUserMessage = !!(data.messages && data.messages.some((m) => m.role === 'user'));
-          if (hasUserMessage) {
-            sessionsWithoutUserMessages.delete(data.id);
-          } else {
-            sessionsWithoutUserMessages.add(data.id);
-          }
           document.getElementById('messages').innerHTML = '';
           currentLoopContainer = null;
           currentStreamEvent = null;
@@ -930,13 +922,14 @@
           readOnlySession = false;
           viewSessionId = data.id;
           viewParentSessionId = null;
-          sessionsWithoutUserMessages.add(data.id);
-          if (pendingCreatedSessionAutoName) {
+          if (data.naming) {
             namingSessions.add(data.id);
-            pendingCreatedSessionAutoName = false;
           }
           upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
-          if (!processing) {
+          if (data.created_from_chat && data.naming) {
+            autoNameSession(data.id);
+          }
+          if (!data.created_from_chat) {
             document.getElementById('messages').innerHTML = '';
             currentLoopContainer = null;
             currentStreamEvent = null;
@@ -947,6 +940,13 @@
           }
           listSessions();
           break;
+        case 'session_naming_started':
+          if (data && data.id) {
+            namingSessions.add(data.id);
+            upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
+            autoNameSession(data.id);
+          }
+          break;
         case 'session_forked':
           sessionId = data.id;
           ws.send(JSON.stringify({ action: 'load_session', session_id: data.id }));
@@ -954,12 +954,10 @@
           break;
         case 'session_renamed':
           namingSessions.delete(data.id);
-          sessionsWithoutUserMessages.delete(data.id);
           listSessions();
           break;
         case 'session_deleted':
           namingSessions.delete(data.id);
-          sessionsWithoutUserMessages.delete(data.id);
           subsessionsByParent.delete(data.id);
           expandedSessions.delete(data.id);
           if (data.id === sessionId || data.id === viewSessionId) {
@@ -1268,19 +1266,11 @@
       resetStreamRenderState();
       currentLoopToolEvents.clear();
       addMessage('user', text);
-      const shouldAutoName = !sessionId || sessionsWithoutUserMessages.has(sessionId);
-      if (shouldAutoName && sessionId) {
-        namingSessions.add(sessionId);
-        renderSessions(lastSessions);
-      }
-      if (!sessionId) {
-        pendingCreatedSessionAutoName = true;
-      }
       input.value = '';
       processing = true;
       updateSendButton();
       setStatus('processing', 'Processing...');
-      ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId, auto_name: shouldAutoName }));
+      ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId }));
     }
 
     function stopAgent() {
@@ -1395,7 +1385,7 @@
       const targetId = id || sessionId;
       if (targetId) {
         namingSessions.add(targetId);
-        listSessions();
+        renderSessions(lastSessions);
         ws.send(JSON.stringify({ action: 'auto_name_session', session_id: targetId }));
       }
     }
@@ -1431,7 +1421,7 @@
         const children = subsessionsByParent.get(s.id) || [];
         const parentActive = !readOnlySession && s.id === sessionId;
         let html = '<div class="session-item' + (parentActive ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
-          '<span class="session-toggle' + (expanded ? ' expanded' : '') + '" onclick="toggleSubSessions(\'' + s.id + '\', event)"><span class="chevron"></span></span>' +
+          '<span class="session-toggle' + (expanded ? ' expanded' : '') + '" onclick="toggleSubSessions(\'' + s.id + '\', event)"><svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><polyline points="5,3 11,8 5,13"></polyline></svg></span>' +
           '<span class="title">' + escapeHtml(s.title || 'Untitled') + '</span>' +
           spinner +
           '<span class="actions">' +
