@@ -282,7 +282,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if session_id:
                     session = load_session(SESSION_DIR, session_id)
                     if session:
-                        should_auto_name = not any(m.role == "user" for m in session.messages)
+                        should_auto_name = should_auto_name or not any(m.role == "user" for m in session.messages)
                         state = AgentLoopState(messages=session.messages)
                     else:
                         await send_event("error", f"Session not found: {session_id}")
@@ -301,8 +301,6 @@ async def websocket_endpoint(ws: WebSocket):
                     await send_event("session_created", {
                         "id": session.meta.id,
                         "title": session.meta.title,
-                        "created_from_chat": True,
-                        "naming": True,
                     })
                     sessions = list_sessions(SESSION_DIR)
                     await send_event("sessions", [{"id": s.id, "title": s.title, "updated_at": s.updated_at} for s in sessions])

@@ -721,10 +721,11 @@
     const pendingPermissionCards = new Map();
     const pendingPermissionRules = new Map();
     const namingSessions = new Set();
-    const sessionsPendingFirstMessageName = new Set();
+    const sessionsWithoutUserMessages = new Set();
     const expandedSessions = new Set();
     const subsessionsByParent = new Map();
     let lastSessions = [];
+    let pendingCreatedSessionAutoName = false;
 
     function connect() {
       setLoading(true);
@@ -813,6 +814,7 @@
           updateSendButton();
           if (data.session_id) {
             sessionId = data.session_id;
+            sessionsWithoutUserMessages.delete(data.session_id);
             if (data.auto_name) {
               autoNameSession(data.session_id);
             } else {
@@ -873,6 +875,12 @@
           readOnlySession = !!data.read_only;
           viewSessionId = data.id;
           viewParentSessionId = data.parent_session_id || null;
+          const hasUserMessage = !!(data.messages && data.messages.some((m) => m.role === 'user'));
+          if (hasUserMessage) {
+            sessionsWithoutUserMessages.delete(data.id);
+          } else {
+            sessionsWithoutUserMessages.add(data.id);
+          }
           document.getElementById('messages').innerHTML = '';
           currentLoopContainer = null;
           currentStreamEvent = null;
@@ -922,13 +930,13 @@
           readOnlySession = false;
           viewSessionId = data.id;
           viewParentSessionId = null;
-          if (data.naming) {
+          sessionsWithoutUserMessages.add(data.id);
+          if (pendingCreatedSessionAutoName) {
             namingSessions.add(data.id);
-          } else {
-            sessionsPendingFirstMessageName.add(data.id);
+            pendingCreatedSessionAutoName = false;
           }
           upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
-          if (!data.created_from_chat) {
+          if (!processing) {
             document.getElementById('messages').innerHTML = '';
             currentLoopContainer = null;
             currentStreamEvent = null;
@@ -946,12 +954,12 @@
           break;
         case 'session_renamed':
           namingSessions.delete(data.id);
-          sessionsPendingFirstMessageName.delete(data.id);
+          sessionsWithoutUserMessages.delete(data.id);
           listSessions();
           break;
         case 'session_deleted':
           namingSessions.delete(data.id);
-          sessionsPendingFirstMessageName.delete(data.id);
+          sessionsWithoutUserMessages.delete(data.id);
           subsessionsByParent.delete(data.id);
           expandedSessions.delete(data.id);
           if (data.id === sessionId || data.id === viewSessionId) {
@@ -1260,16 +1268,19 @@
       resetStreamRenderState();
       currentLoopToolEvents.clear();
       addMessage('user', text);
-      const shouldNameAfterFirstMessage = sessionId && sessionsPendingFirstMessageName.has(sessionId);
-      if (shouldNameAfterFirstMessage) {
+      const shouldAutoName = !sessionId || sessionsWithoutUserMessages.has(sessionId);
+      if (shouldAutoName && sessionId) {
         namingSessions.add(sessionId);
         renderSessions(lastSessions);
+      }
+      if (!sessionId) {
+        pendingCreatedSessionAutoName = true;
       }
       input.value = '';
       processing = true;
       updateSendButton();
       setStatus('processing', 'Processing...');
-      ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId, auto_name: !!shouldNameAfterFirstMessage }));
+      ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId, auto_name: shouldAutoName }));
     }
 
     function stopAgent() {
