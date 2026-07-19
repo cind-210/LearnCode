@@ -187,22 +187,27 @@
     }
 
     .session-toggle {
-      width: 20px;
+      width: 24px;
+      height: 24px;
       flex-shrink: 0;
       color: #999;
-      font-size: 16px;
-      line-height: 1;
-      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     .session-toggle .chevron {
-      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
       transform-origin: 50% 50%;
+      transform: rotate(-45deg);
       transition: transform 0.12s ease;
     }
 
     .session-toggle.expanded .chevron {
-      transform: rotate(90deg);
+      transform: rotate(45deg);
     }
 
     .session-item.active .session-toggle {
@@ -716,6 +721,7 @@
     const pendingPermissionCards = new Map();
     const pendingPermissionRules = new Map();
     const namingSessions = new Set();
+    const sessionsPendingFirstMessageName = new Set();
     const expandedSessions = new Set();
     const subsessionsByParent = new Map();
     let lastSessions = [];
@@ -918,6 +924,8 @@
           viewParentSessionId = null;
           if (data.naming) {
             namingSessions.add(data.id);
+          } else {
+            sessionsPendingFirstMessageName.add(data.id);
           }
           upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
           if (!data.created_from_chat) {
@@ -938,10 +946,12 @@
           break;
         case 'session_renamed':
           namingSessions.delete(data.id);
+          sessionsPendingFirstMessageName.delete(data.id);
           listSessions();
           break;
         case 'session_deleted':
           namingSessions.delete(data.id);
+          sessionsPendingFirstMessageName.delete(data.id);
           subsessionsByParent.delete(data.id);
           expandedSessions.delete(data.id);
           if (data.id === sessionId || data.id === viewSessionId) {
@@ -1250,11 +1260,16 @@
       resetStreamRenderState();
       currentLoopToolEvents.clear();
       addMessage('user', text);
+      const shouldNameAfterFirstMessage = sessionId && sessionsPendingFirstMessageName.has(sessionId);
+      if (shouldNameAfterFirstMessage) {
+        namingSessions.add(sessionId);
+        renderSessions(lastSessions);
+      }
       input.value = '';
       processing = true;
       updateSendButton();
       setStatus('processing', 'Processing...');
-      ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId }));
+      ws.send(JSON.stringify({ action: 'chat', message: text, session_id: sessionId, auto_name: !!shouldNameAfterFirstMessage }));
     }
 
     function stopAgent() {
@@ -1405,7 +1420,7 @@
         const children = subsessionsByParent.get(s.id) || [];
         const parentActive = !readOnlySession && s.id === sessionId;
         let html = '<div class="session-item' + (parentActive ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
-          '<span class="session-toggle' + (expanded ? ' expanded' : '') + '" onclick="toggleSubSessions(\'' + s.id + '\', event)"><span class="chevron">&#8250;</span></span>' +
+          '<span class="session-toggle' + (expanded ? ' expanded' : '') + '" onclick="toggleSubSessions(\'' + s.id + '\', event)"><span class="chevron"></span></span>' +
           '<span class="title">' + escapeHtml(s.title || 'Untitled') + '</span>' +
           spinner +
           '<span class="actions">' +

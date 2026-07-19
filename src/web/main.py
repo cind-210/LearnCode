@@ -277,7 +277,7 @@ async def websocket_endpoint(ws: WebSocket):
                 workspace = APP_WORKSPACE
                 session_id = req.get("session_id")
                 created_new_session = False
-                should_auto_name = False
+                should_auto_name = bool(req.get("auto_name"))
 
                 if session_id:
                     session = load_session(SESSION_DIR, session_id)
