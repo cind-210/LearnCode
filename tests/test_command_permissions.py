@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import asyncio
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from src.tools.command_permissions import ParsedCommand, parse_command, powershell_executable
@@ -171,6 +173,72 @@ class RunCommandPermissionTests(unittest.IsolatedAsyncioTestCase):
         response = await resolver.check(_request("  "))
 
         self.assertEqual(response.decision, PermissionDecision.DENY)
+
+    async def test_regex_run_command_rule_matches_segment(self) -> None:
+        resolver = _resolver(PermissionRules(deny=[r"regex:run_command:^Remove-Item\b"]))
+        with _mock_parse(["Get-ChildItem", "Remove-Item x"]):
+            response = await resolver.check(_request("Get-ChildItem; Remove-Item x"))
+
+        self.assertEqual(response.decision, PermissionDecision.DENY)
+        self.assertIn("Remove-Item x", response.reason)
+
+
+class PathPermissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_workspace_path_rule_allows_resolved_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            resolver = _resolver(PermissionRules(
+                allow=["read_file:workspace/**"],
+                ask=["read_file:outside/**"],
+            ))
+            resolver.permission_context.workspace = tmp
+
+            response = await resolver.check(PermissionRequest(
+                tool_name="read_file",
+                input={"path": "inside.txt"},
+                message="read file",
+            ))
+
+            self.assertEqual(response.decision, PermissionDecision.ALLOW)
+
+    async def test_outside_path_rule_requests_permission(self) -> None:
+        calls: list[PermissionRequest] = []
+
+        async def callback(request: PermissionRequest) -> PermissionResponse:
+            calls.append(request)
+            return PermissionResponse(decision=PermissionDecision.ASK)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = str(Path(tmp).parent / "outside.txt")
+            resolver = PermissionResolver(
+                PermissionConfig(permission_rules=PermissionRules(
+                    allow=["write_file:workspace/**"],
+                    ask=["write_file:outside/**"],
+                )),
+                callback=callback,
+            )
+            resolver.permission_context.workspace = tmp
+
+            response = await resolver.check(PermissionRequest(
+                tool_name="write_file",
+                input={"path": outside},
+                message="write file",
+            ))
+
+            self.assertEqual(response.decision, PermissionDecision.ASK)
+            self.assertEqual(calls[0].suggested_rules, ["write_file:outside/**"])
+
+    async def test_regex_path_rule_matches_resolved_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            resolver = _resolver(PermissionRules(deny=[r"regex:read_file:.*secret\.txt$"]))
+            resolver.permission_context.workspace = tmp
+
+            response = await resolver.check(PermissionRequest(
+                tool_name="read_file",
+                input={"path": "secret.txt"},
+                message="read file",
+            ))
+
+            self.assertEqual(response.decision, PermissionDecision.DENY)
 
 
 @unittest.skipIf(powershell_executable() is None, "PowerShell parser is not available")

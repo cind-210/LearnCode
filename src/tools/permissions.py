@@ -6,6 +6,8 @@ Mirrors src/permissions.ts from the TypeScript version.
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -94,6 +96,16 @@ class ToolPermissionContext:
     mode: PermissionMode = PermissionMode.DEFAULT
     additional_directories: list[str] = field(default_factory=list)
     rules: PermissionRules = field(default_factory=PermissionRules)
+    workspace: str = ""
+
+
+PATH_PERMISSION_TOOLS = {
+    "list_files": "path",
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "grep_files": "path",
+}
 
 
 def _string_list(raw: Any) -> list[str]:
@@ -116,6 +128,8 @@ def _remove_rule(rules: list[str], rule: str) -> None:
 
 
 def _rule_matches(tool_name: str, rule: str) -> bool:
+    if rule.startswith("regex:"):
+        return re.search(rule[len("regex:"):], tool_name) is not None
     if rule == tool_name or rule == "*":
         return True
     if rule.endswith("__*"):
@@ -134,6 +148,58 @@ def _has_matching_rule(rules: list[str], tool_name: str) -> bool:
         if _rule_matches(tool_name, rule):
             return True
     return False
+
+
+def _resolve_input_path(path: str, workspace: str) -> str:
+    base = Path(workspace or ".").resolve()
+    candidate = Path(path or ".")
+    if candidate.is_absolute():
+        return str(candidate.resolve())
+    return str((base / candidate).resolve())
+
+
+def _is_inside_path(path: str, root: str) -> bool:
+    resolved = os.path.normcase(os.path.abspath(path))
+    root_path = os.path.normcase(os.path.abspath(root))
+    return resolved == root_path or resolved.startswith(root_path + os.sep)
+
+
+def _path_scope(input_value: Any, workspace: str, path_key: str) -> str:
+    path = ""
+    if isinstance(input_value, dict):
+        path = str(input_value.get(path_key, "."))
+    resolved = _resolve_input_path(path, workspace)
+    return "workspace" if _is_inside_path(resolved, workspace) else "outside"
+
+
+def _path_targets(input_value: Any, workspace: str, tool_name: str, path_key: str) -> list[str]:
+    path = ""
+    if isinstance(input_value, dict):
+        path = str(input_value.get(path_key, "."))
+    resolved = _resolve_input_path(path, workspace)
+    scope = "workspace" if _is_inside_path(resolved, workspace) else "outside"
+    return [
+        tool_name,
+        f"{tool_name}:{scope}",
+        f"{tool_name}:{scope}/**",
+        f"{tool_name}:{resolved}",
+    ]
+
+
+def _path_rule_matches(tool_name: str, rule: str, scope: str) -> bool:
+    return rule in (
+        f"{tool_name}:{scope}",
+        f"{tool_name}:{scope}/**",
+        f"{tool_name}:path:{scope}",
+        f"{tool_name}:path:{scope}/**",
+    )
+
+
+def _regex_rule_matches_targets(rule: str, targets: list[str]) -> bool:
+    if not rule.startswith("regex:"):
+        return False
+    pattern = rule[len("regex:"):]
+    return any(re.search(pattern, target) is not None for target in targets)
 
 
 @dataclass
@@ -237,6 +303,52 @@ class PermissionResolver:
                 return None
         return None
 
+    def _check_path_rule(self, request: PermissionRequest) -> Optional[PermissionDecision]:
+        if not self.permission_context or request.tool_name not in PATH_PERMISSION_TOOLS:
+            return None
+        workspace = self.permission_context.workspace
+        if not workspace and isinstance(request.input, dict):
+            workspace = str(request.input.get("workspace", ""))
+        if not workspace:
+            return None
+
+        scope = _path_scope(request.input, workspace, PATH_PERMISSION_TOOLS[request.tool_name])
+        rules = self.permission_context.rules
+        for rule in rules.deny:
+            if _path_rule_matches(request.tool_name, rule, scope):
+                return PermissionDecision.DENY
+        for rule in rules.ask:
+            if _path_rule_matches(request.tool_name, rule, scope):
+                return PermissionDecision.ASK
+        for rule in rules.allow:
+            if _path_rule_matches(request.tool_name, rule, scope):
+                return PermissionDecision.ALLOW
+        return None
+
+    def _check_regex_request_rule(self, request: PermissionRequest) -> Optional[PermissionDecision]:
+        if not self.permission_context:
+            return None
+        targets = [request.tool_name]
+        workspace = self.permission_context.workspace
+        if request.tool_name in PATH_PERMISSION_TOOLS and workspace:
+            targets = _path_targets(
+                request.input,
+                workspace,
+                request.tool_name,
+                PATH_PERMISSION_TOOLS[request.tool_name],
+            )
+        rules = self.permission_context.rules
+        for rule in rules.deny:
+            if _regex_rule_matches_targets(rule, targets):
+                return PermissionDecision.DENY
+        for rule in rules.allow:
+            if _regex_rule_matches_targets(rule, targets):
+                return PermissionDecision.ALLOW
+        for rule in rules.ask:
+            if _regex_rule_matches_targets(rule, targets):
+                return PermissionDecision.ASK
+        return None
+
     def _check_run_command_segment(self, segment: str) -> Optional[PermissionDecision]:
         if not self.permission_context:
             return None
@@ -306,6 +418,24 @@ class PermissionResolver:
         if self.config.mode == PermissionMode.PLAN:
             return PermissionResponse(decision=PermissionDecision.DENY, reason="目前处于计划模式，只能读取数据")
 
+        path_rule = self._check_path_rule(request)
+        if path_rule is not None:
+            if path_rule == PermissionDecision.ASK:
+                request.reason = "Tool input points outside the allowed workspace scope."
+                request.suggested_rules = [f"{request.tool_name}:outside/**"]
+                if self.callback:
+                    return await self.callback(request)
+                return PermissionResponse(decision=PermissionDecision.DENY, reason="Permission required but no permission handler is available")
+            return PermissionResponse(decision=path_rule)
+
+        regex_rule = self._check_regex_request_rule(request)
+        if regex_rule is not None:
+            if regex_rule == PermissionDecision.ASK and self.callback:
+                return await self.callback(request)
+            if regex_rule == PermissionDecision.ASK:
+                return PermissionResponse(decision=PermissionDecision.DENY, reason="Permission required but no permission handler is available")
+            return PermissionResponse(decision=regex_rule)
+
         rule = self._check_rule(request.tool_name)
         if rule is not None:
             if rule == PermissionDecision.ASK and self.callback:
@@ -360,13 +490,15 @@ class Sandbox:
         app_state: Any = None,
     ) -> Sandbox:
         resolver = PermissionResolver(config=config)
-        return cls(
+        sandbox = cls(
             permission_context=resolver.permission_context or ToolPermissionContext(mode=config.mode),
             workspace=workspace,
             agent_id=agent_id,
             session_id=session_id,
             app_state=app_state,
         )
+        sandbox.permission_context.workspace = workspace
+        return sandbox
 
     def to_tool_context(self) -> dict[str, Any]:
         return {
@@ -391,6 +523,7 @@ class Sandbox:
             mode=permission_mode or self.permission_context.mode,
             additional_directories=list(self.permission_context.additional_directories),
             rules=self.permission_context.rules.copy(),
+            workspace=self.workspace,
         )
         for rule in allow_rules or []:
             _add_rule(permission_context.rules.allow, rule)

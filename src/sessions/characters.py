@@ -91,6 +91,22 @@ GENERAL_PURPOSE_CHARACTER = Character(
     ),
     skills=["*"],
     tools=["*"],
+    permissions=PermissionRules(
+        allow=[
+            "list_files:workspace/**",
+            "read_file:workspace/**",
+            "write_file:workspace/**",
+            "edit_file:workspace/**",
+            "grep_files:workspace/**",
+        ],
+        ask=[
+            "list_files:outside/**",
+            "read_file:outside/**",
+            "write_file:outside/**",
+            "edit_file:outside/**",
+            "grep_files:outside/**",
+        ],
+    ),
 )
 
 

@@ -12,6 +12,7 @@ import base64
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -62,6 +63,12 @@ def command_prefix_rule(command: str) -> str:
 
 
 def run_command_rule_matches_segment(rule: str, segment: str) -> bool:
+    regex_prefix = f"regex:{RUN_COMMAND_TOOL}:"
+    if rule.startswith(regex_prefix):
+        pattern = rule[len(regex_prefix):]
+        flags = re.IGNORECASE if active_shell_name() == "powershell" else 0
+        return re.search(pattern, segment.strip(), flags=flags) is not None
+
     inner = _run_command_rule_inner(rule)
     if inner is None:
         return False
