@@ -189,10 +189,11 @@
     }
 
     .session-toggle {
-      width: 16px;
+      width: 20px;
       flex-shrink: 0;
       color: #999;
-      font-size: 11px;
+      font-size: 16px;
+      line-height: 1;
       text-align: center;
     }
 
@@ -754,7 +755,6 @@
     function handleEvent(type, data) {
       switch (type) {
         case 'step':
-          currentStreamEvent = null;
           if (!streamedThinkingThisStep && data.thinking_blocks && data.thinking_blocks.length) {
             appendLoopEvent('Thinking', formatThinkingBlocks(data.thinking_blocks), 'thinking');
           }
@@ -773,10 +773,14 @@
             if (!streamedTextThisStep && data.content) {
               appendLoopEvent('Assistant', data.content, 'assistant');
             }
-          } else if (data.type === 'assistant' && data.content && !streamedTextThisStep) {
+          } else if (data.type === 'assistant' && data.content) {
+            if (streamedTextThisStep) {
+              removeCurrentAssistantStreamEvent();
+            }
             collapseLoopContainer();
             addMessage('assistant', data.content);
           }
+          currentStreamEvent = null;
           resetStreamRenderState();
           break;
         case 'delta':
@@ -903,6 +907,7 @@
           if (data.naming) {
             namingSessions.add(data.id);
           }
+          upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
           if (data.created_from_chat && data.naming) {
             autoNameSession(data.id);
           }
@@ -1139,7 +1144,7 @@
       item.appendChild(eventLabel);
       item.appendChild(eventBody);
       group.body.appendChild(item);
-      return { group, body: eventBody, content: '', kind };
+      return { group, item, body: eventBody, content: '', kind };
     }
 
     function handleDelta(data) {
@@ -1159,6 +1164,16 @@
       currentStreamEvent.group.body.scrollTop = currentStreamEvent.group.body.scrollHeight;
       const messages = document.getElementById('messages');
       messages.scrollTop = messages.scrollHeight;
+    }
+
+    function removeCurrentAssistantStreamEvent() {
+      if (!currentStreamEvent || currentStreamEvent.kind !== 'assistant' || !currentStreamEvent.item) return;
+      currentStreamEvent.item.remove();
+      if (currentStreamEvent.group) {
+        currentStreamEvent.group.items = Math.max(0, currentStreamEvent.group.items - 1);
+        currentStreamEvent.group.count.textContent = currentStreamEvent.group.items + (currentStreamEvent.group.items === 1 ? ' item' : ' items');
+      }
+      currentStreamEvent = null;
     }
 
     function resetStreamRenderState() {
@@ -1361,6 +1376,17 @@
       ws.send(JSON.stringify({ action: 'fork_session', session_id: id }));
     }
 
+    function upsertSessionListItem(session) {
+      if (!session || !session.id) return;
+      const index = lastSessions.findIndex((item) => item.id === session.id);
+      if (index >= 0) {
+        lastSessions[index] = Object.assign({}, lastSessions[index], session);
+      } else {
+        lastSessions.unshift(session);
+      }
+      renderSessions(lastSessions);
+    }
+
     function renderSessions(sessions) {
       lastSessions = Array.isArray(sessions) ? sessions : [];
       const container = document.getElementById('session-list');
@@ -1370,7 +1396,7 @@
         const children = subsessionsByParent.get(s.id) || [];
         const parentActive = !readOnlySession && s.id === sessionId;
         let html = '<div class="session-item' + (parentActive ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
-          '<span class="session-toggle" onclick="toggleSubSessions(\'' + s.id + '\', event)">' + (expanded ? '&#9662;' : '&#9656;') + '</span>' +
+          '<span class="session-toggle" onclick="toggleSubSessions(\'' + s.id + '\', event)">' + (expanded ? '&#8964;' : '&#8250;') + '</span>' +
           '<span class="title">' + escapeHtml(s.title || 'Untitled') + '</span>' +
           spinner +
           '<span class="actions">' +
