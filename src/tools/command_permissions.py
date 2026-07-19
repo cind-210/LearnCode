@@ -1,9 +1,9 @@
 """
 Shell command parsing for run_command permissions.
 
-The permission layer only trusts AST-based parsing. If the parser for the
-current platform is unavailable, callers should ask the user instead of
-assuming the command is safe.
+The permission layer uses AST-based parsing when available so deny/ask rules
+can match individual shell segments. Commands that do not match deny/ask rules
+are allowed by default.
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from typing import Any, Optional
 
 
 RUN_COMMAND_TOOL = "run_command"
-MAX_COMMAND_SEGMENTS = 50
 
 
 @dataclass
@@ -109,12 +108,6 @@ def _parse_bash_command(command: str) -> ParsedCommand:
         _collect_bash_commands(tree, command, segments)
 
     segments = _clean_segments(segments)
-    if len(segments) > MAX_COMMAND_SEGMENTS:
-        return ParsedCommand(
-            shell="bash",
-            valid=False,
-            reason=f"Command has too many parsed segments ({len(segments)})",
-        )
     return ParsedCommand(shell="bash", segments=segments)
 
 
@@ -161,12 +154,6 @@ async def _parse_powershell_command(command: str) -> ParsedCommand:
         )
 
     segments = _clean_segments(payload.get("segments", []))
-    if len(segments) > MAX_COMMAND_SEGMENTS:
-        return ParsedCommand(
-            shell="powershell",
-            valid=False,
-            reason=f"Command has too many parsed segments ({len(segments)})",
-        )
     return ParsedCommand(shell="powershell", segments=segments)
 
 

@@ -178,6 +178,28 @@
       color: #fff;
     }
 
+    .session-item.child {
+      margin-left: 18px;
+      font-size: 12px;
+      color: #666;
+    }
+
+    .session-item.child .title {
+      padding-left: 4px;
+    }
+
+    .session-toggle {
+      width: 16px;
+      flex-shrink: 0;
+      color: #999;
+      font-size: 11px;
+      text-align: center;
+    }
+
+    .session-item.active .session-toggle {
+      color: rgba(255, 255, 255, 0.85);
+    }
+
     .chat-area {
       flex: 1;
       display: flex;
@@ -649,11 +671,13 @@
       </div>
     </div>
   </div>
-
   <script>
     let ws = null;
     let sessionId = null;
     let processing = false;
+    let readOnlySession = false;
+    let viewSessionId = null;
+    let viewParentSessionId = null;
     let editingId = null;
     let currentLoopContainer = null;
     let currentStreamEvent = null;
@@ -661,6 +685,9 @@
     const pendingPermissionCards = new Map();
     const pendingPermissionRules = new Map();
     const namingSessions = new Set();
+    const expandedSessions = new Set();
+    const subsessionsByParent = new Map();
+    let lastSessions = [];
 
     function connect() {
       setLoading(true);
@@ -771,6 +798,12 @@
         case 'sessions':
           renderSessions(data);
           break;
+        case 'subsessions':
+          if (data && data.parent_session_id) {
+            subsessionsByParent.set(data.parent_session_id, data.children || []);
+            renderSessions(lastSessions);
+          }
+          break;
         case 'todos_updated':
           if (!data || !data.session_id || data.session_id === sessionId) {
             renderTodos((data && data.todos) || []);
@@ -786,6 +819,9 @@
           document.getElementById('workspace-label').textContent = 'Workspace: ' + data.workspace;
           break;
         case 'session_loaded':
+          readOnlySession = !!data.read_only;
+          viewSessionId = data.id;
+          viewParentSessionId = data.parent_session_id || null;
           document.getElementById('messages').innerHTML = '';
           currentLoopContainer = null;
           currentStreamEvent = null;
@@ -796,15 +832,17 @@
             for (const m of data.messages) {
               if (m.role === 'user') {
                 addMessage('user', m.content);
-              } else if (m.role === 'assistant' || m.role === 'assistant_progress') {
+              } else if (m.role === 'assistant') {
                 if (m.content) addMessage('assistant', m.content);
+              } else if (m.role === 'assistant_progress') {
+                if (m.content) appendLoopEvent('Assistant', m.content, 'assistant');
               } else if (m.role === 'assistant_tool_call') {
                 if (m.tool_name !== 'TodoWrite') {
-                  addMessage('tool', 'Tool: ' + (m.tool_name || '') + '\n' + JSON.stringify(m.input || {}, null, 2));
+                  appendLoopEvent('Tool: ' + (m.tool_name || ''), JSON.stringify(m.input || {}, null, 2), 'tool');
                 }
               } else if (m.role === 'tool_result') {
                 if (m.tool_name !== 'TodoWrite') {
-                  addMessage('tool', (m.is_error ? '[Error] ' : '') + (m.content || ''));
+                  appendLoopEvent('Result: ' + (m.tool_name || ''), (m.is_error ? '[Error] ' : '') + (m.content || ''), 'tool');
                 }
               } else if (m.role === 'assistant_thinking') {
                 appendLoopEvent('Thinking', formatThinkingBlocks(m.blocks || []), 'thinking');
@@ -820,10 +858,14 @@
             }
           }
           addMessage('compact', 'Loaded: ' + data.title + ' (' + data.message_count + ' messages)');
+          updateSendButton();
           listSessions();
           break;
         case 'session_created':
           sessionId = data.id;
+          readOnlySession = false;
+          viewSessionId = data.id;
+          viewParentSessionId = null;
           if (data.naming) {
             namingSessions.add(data.id);
           }
@@ -850,10 +892,16 @@
           break;
         case 'session_deleted':
           namingSessions.delete(data.id);
-          if (data.id === sessionId) {
+          subsessionsByParent.delete(data.id);
+          expandedSessions.delete(data.id);
+          if (data.id === sessionId || data.id === viewSessionId) {
             sessionId = null;
+            viewSessionId = null;
+            viewParentSessionId = null;
+            readOnlySession = false;
             document.getElementById('messages').innerHTML = '';
             renderTodos([]);
+            updateSendButton();
           }
           listSessions();
           break;
@@ -868,7 +916,7 @@
       const div = document.createElement('div');
       div.className = 'message ' + role;
       let avatar = 'AI';
-      if (role === 'user') avatar = 'U';
+      if (role === 'user') avatar = 'M';
       else if (role === 'tool') avatar = 'T';
       else if (role === 'error') avatar = '!';
       else if (role === 'compact') avatar = 'C';
@@ -896,10 +944,12 @@
         '<div class="permission-input">' + escapeHtml(inputText) + '</div>' +
         segments +
         '<div class="permission-actions">' +
-        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'allow\')">Allow once</button>' +
-        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'always\')">Allow for session</button>' +
-        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'deny\')">Deny</button>' +
-        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'never\')">Deny for session</button>' +
+        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'allow\', \'once\')">Allow once</button>' +
+        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'always\', \'session\')">Allow session</button>' +
+        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'always\', \'character\')">Allow character</button>' +
+        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'deny\', \'once\')">Deny once</button>' +
+        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'never\', \'session\')">Deny session</button>' +
+        '<button onclick="respondPermission(\'' + escapeHtml(data.id) + '\', \'never\', \'character\')">Deny character</button>' +
         '</div>' +
         '</div>' +
         '</div>';
@@ -910,7 +960,7 @@
       setStatus('processing', 'Waiting for permission...');
     }
 
-    function respondPermission(id, decision) {
+    function respondPermission(id, decision, scope) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const card = pendingPermissionCards.get(id);
       const toolName = card ? (card.dataset.toolName || '') : '';
@@ -922,7 +972,7 @@
         pendingPermissionCards.delete(id);
         pendingPermissionRules.delete(id);
       }
-      ws.send(JSON.stringify({ action: 'permission_response', request_id: id, decision: decision, tool_name: toolName, rules: rules }));
+      ws.send(JSON.stringify({ action: 'permission_response', request_id: id, decision: decision, scope: scope || 'once', tool_name: toolName, rules: rules }));
       setStatus('processing', 'Processing...');
     }
 
@@ -1081,6 +1131,7 @@
     }
 
     function onSendButtonClick() {
+      if (readOnlySession) return;
       if (processing) {
         stopAgent();
       } else {
@@ -1091,6 +1142,7 @@
     function sendMessage() {
       const input = document.getElementById('user-input');
       const text = input.value.trim();
+      if (readOnlySession) return;
       if (!text || processing) return;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         setStatus('disconnected', 'Not connected');
@@ -1122,7 +1174,11 @@
 
     function updateSendButton() {
       const btn = document.getElementById('send-btn');
-      btn.disabled = !ws || ws.readyState !== WebSocket.OPEN;
+      const input = document.getElementById('user-input');
+      const unavailable = !ws || ws.readyState !== WebSocket.OPEN || readOnlySession;
+      btn.disabled = unavailable;
+      input.disabled = readOnlySession;
+      input.placeholder = readOnlySession ? 'SubSession view is read-only' : 'Type a message...';
       btn.textContent = processing ? 'Stop' : 'Send';
     }
 
@@ -1132,8 +1188,12 @@
     }
 
     function newSession() {
-      if (!ws) return;
-      ws.send(JSON.stringify({ action: 'new_session' }));
+      readOnlySession = false;
+      viewSessionId = null;
+      viewParentSessionId = null;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action: 'new_session' }));
+      }
     }
 
     function listSessions() {
@@ -1144,9 +1204,36 @@
     function selectSession(id) {
       if (editingId) return;
       sessionId = id;
+      readOnlySession = false;
+      viewSessionId = id;
+      viewParentSessionId = null;
       document.getElementById('messages').innerHTML = '';
       ws.send(JSON.stringify({ action: 'load_session', session_id: id }));
       listSessions();
+    }
+
+    function selectSubSession(parentId, childId) {
+      if (editingId) return;
+      readOnlySession = true;
+      viewSessionId = childId;
+      viewParentSessionId = parentId;
+      document.getElementById('messages').innerHTML = '';
+      updateSendButton();
+      ws.send(JSON.stringify({ action: 'load_subsession', parent_session_id: parentId, session_id: childId }));
+    }
+
+    function toggleSubSessions(id, e) {
+      e.stopPropagation();
+      if (expandedSessions.has(id)) {
+        expandedSessions.delete(id);
+        renderSessions(lastSessions);
+        return;
+      }
+      expandedSessions.add(id);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action: 'list_subsessions', parent_session_id: id }));
+      }
+      renderSessions(lastSessions);
     }
 
     function startRename(id, e) {
@@ -1200,10 +1287,15 @@
     }
 
     function renderSessions(sessions) {
+      lastSessions = Array.isArray(sessions) ? sessions : [];
       const container = document.getElementById('session-list');
-      container.innerHTML = sessions.map(function (s) {
+      container.innerHTML = lastSessions.map(function (s) {
         const spinner = namingSessions.has(s.id) ? '<span class="naming-spinner"></span>' : '';
-        return '<div class="session-item' + (s.id === sessionId ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
+        const expanded = expandedSessions.has(s.id);
+        const children = subsessionsByParent.get(s.id) || [];
+        const parentActive = !readOnlySession && s.id === sessionId;
+        let html = '<div class="session-item' + (parentActive ? ' active' : '') + '" data-id="' + s.id + '" onclick="selectSession(\'' + s.id + '\')">' +
+          '<span class="session-toggle" onclick="toggleSubSessions(\'' + s.id + '\', event)">' + (expanded ? '&#9662;' : '&#9656;') + '</span>' +
           '<span class="title">' + escapeHtml(s.title || 'Untitled') + '</span>' +
           spinner +
           '<span class="actions">' +
@@ -1212,6 +1304,18 @@
           '<button title="Fork" onclick="forkSession(\'' + s.id + '\', event)">F</button>' +
           '<button title="Delete" onclick="deleteSession(\'' + s.id + '\', event)">&#10005;</button>' +
           '</span></div>';
+        if (expanded) {
+          html += children.map(function (child) {
+            const childActive = readOnlySession && viewSessionId === child.id && viewParentSessionId === s.id;
+            const label = child.name || child.id;
+            const detail = child.description ? ' - ' + child.description : '';
+            return '<div class="session-item child' + (childActive ? ' active' : '') + '" data-id="' + child.id + '" onclick="selectSubSession(\'' + s.id + '\', \'' + child.id + '\')">' +
+              '<span class="session-toggle"></span>' +
+              '<span class="title">' + escapeHtml(label + detail) + '</span>' +
+              '</div>';
+          }).join('');
+        }
+        return html;
       }).join('');
     }
 

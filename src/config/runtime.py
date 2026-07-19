@@ -30,6 +30,8 @@ LEARN_CODE_DIR = Path(
 LEARN_CODE_SETTINGS_PATH = LEARN_CODE_DIR / "settings.json"
 LEARN_CODE_HISTORY_PATH = LEARN_CODE_DIR / "history.jsonl"
 LEARN_CODE_PERMISSIONS_PATH = LEARN_CODE_DIR / "permissions.json"
+LEARN_CODE_AGENTS_DIR = LEARN_CODE_DIR / "agents"
+LEARN_CODE_CHARACTERS_DIR = LEARN_CODE_DIR / "characters"
 LEARN_CODE_MCP_PATH = LEARN_CODE_DIR / "mcp.json"
 LEARN_CODE_MCP_TOKENS_PATH = LEARN_CODE_DIR / "mcp-tokens.json"
 LEARN_CODE_PROJECTS_DIR = LEARN_CODE_DIR / "projects"
@@ -58,6 +60,7 @@ class MiniCodeSettings:
     env: Optional[dict[str, Union[str, int]]] = None
     model: Optional[str] = None
     max_output_tokens: Optional[int] = None
+    max_loaded_subsessions: Optional[int] = None
     mcp_servers: dict[str, McpServerConfig] = field(default_factory=dict)
 
 
@@ -69,6 +72,7 @@ class RuntimeConfig:
     auth_token: Optional[str] = None
     api_key: Optional[str] = None
     max_output_tokens: Optional[int] = None
+    max_loaded_subsessions: int = 10
     mcp_servers: dict[str, McpServerConfig] = field(default_factory=dict)
     source_summary: str = ""
 
@@ -144,6 +148,7 @@ async def read_settings_file(file_path: Path) -> MiniCodeSettings:
             env=data.get("env"),
             model=data.get("model"),
             max_output_tokens=data.get("maxOutputTokens"),
+            max_loaded_subsessions=data.get("maxLoadedSubSessions"),
             mcp_servers=servers,
         )
     except Exception as e:
@@ -215,6 +220,11 @@ def merge_settings(base: MiniCodeSettings, override: MiniCodeSettings) -> MiniCo
         env={**(base.env or {}), **(override.env or {})},
         model=override.model or base.model,
         max_output_tokens=override.max_output_tokens if override.max_output_tokens is not None else base.max_output_tokens,
+        max_loaded_subsessions=(
+            override.max_loaded_subsessions
+            if override.max_loaded_subsessions is not None
+            else base.max_loaded_subsessions
+        ),
         mcp_servers=merged_mcp,
     )
 
@@ -238,6 +248,7 @@ async def save_mini_code_settings(updates: MiniCodeSettings) -> None:
         "env": merged.env,
         "model": merged.model,
         "maxOutputTokens": merged.max_output_tokens,
+        "maxLoadedSubSessions": merged.max_loaded_subsessions,
         "mcpServers": {
             name: {
                 "command": cfg.command,
@@ -304,6 +315,12 @@ async def load_runtime_config() -> RuntimeConfig:
         except (ValueError, TypeError):
             pass
 
+    max_loaded_subsessions = 10
+    if settings.max_loaded_subsessions is not None:
+        raw_loaded = int(settings.max_loaded_subsessions)
+        if raw_loaded > 0:
+            max_loaded_subsessions = raw_loaded
+
     if not model:
         raise RuntimeError("No model configured. Set ~/.learncode/settings.json or LEARN_CODE_MODEL env.")
 
@@ -317,6 +334,7 @@ async def load_runtime_config() -> RuntimeConfig:
         auth_token=auth_token,
         api_key=api_key,
         max_output_tokens=max_output_tokens,
+        max_loaded_subsessions=max_loaded_subsessions,
         mcp_servers=settings.mcp_servers,
         source_summary=f"config: {LEARN_CODE_SETTINGS_PATH} > {CLAUDE_SETTINGS_PATH} > process.env",
     )

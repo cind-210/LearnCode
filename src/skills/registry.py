@@ -154,8 +154,6 @@ def discover_skills(workspace: str) -> SkillRegistry:
     registry = SkillRegistry()
     roots = [
         Path.home() / ".learncode" / "skills",
-        Path.home() / ".claude" / "skills",
-        Path(workspace) / ".claude" / "skills",
     ]
     for root in roots:
         discovered = load_skills_from_claude_directory(str(root))

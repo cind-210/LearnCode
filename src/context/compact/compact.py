@@ -158,6 +158,7 @@ async def compact_conversation(
             removed_count=len(messages_to_compress),
             tokens_before=tokens_before,
             tokens_after=tokens_after,
+            removed_messages=messages_to_compress,
         )
     except Exception:
         return None

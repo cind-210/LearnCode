@@ -192,3 +192,4 @@ class CompressionResult:
     tokens_before: int
     tokens_after: int = 0
     did_snip: bool = False
+    removed_messages: list[ChatMessage] = field(default_factory=list)

@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 DEFAULT_MAX_RESULT_SIZE_CHARS = 50_000
-MAX_TOOL_RESULTS_PER_BATCH_CHARS = 200_000
 PREVIEW_SIZE_CHARS = 2_000
 
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -130,76 +129,3 @@ def replace_large_tool_result(
     state.seen_ids.add(tool_use_id)
     state.replacements[tool_use_id] = replacement
     return replacement
-
-
-def apply_tool_result_budget(
-    results: list[dict],
-    state: ContentReplacementState,
-    limit: int = MAX_TOOL_RESULTS_PER_BATCH_CHARS,
-) -> list[dict]:
-    if not results:
-        return results
-
-    replacement_map: dict[str, str] = {}
-    fresh_candidates: list[dict] = []
-    visible_size = 0
-
-    for r in results:
-        content = r.get("content", "")
-        tid = r["tool_use_id"]
-
-        previous = state.replacements.get(tid)
-        if previous is not None:
-            replacement_map[tid] = previous
-            visible_size += len(previous)
-            continue
-
-        if state.seen_ids and tid in state.seen_ids:
-            visible_size += len(content)
-            continue
-
-        if content.strip() == "":
-            state.seen_ids.add(tid)
-            continue
-
-        if _is_already_persisted(content):
-            state.seen_ids.add(tid)
-            state.replacements[tid] = content
-            replacement_map[tid] = content
-            visible_size += len(content)
-            continue
-
-        visible_size += len(content)
-        fresh_candidates.append({
-            "tool_use_id": tid,
-            "content": content,
-            "size": len(content),
-        })
-
-    sorted_candidates = sorted(fresh_candidates, key=lambda c: (-c["size"], c["tool_use_id"]))
-
-    for candidate in sorted_candidates:
-        if visible_size <= limit:
-            break
-
-        persisted = _persist_tool_result(candidate["content"], candidate["tool_use_id"])
-        state.seen_ids.add(candidate["tool_use_id"])
-        if not persisted:
-            continue
-
-        replacement = _build_persisted_message(persisted)
-        replacement_map[candidate["tool_use_id"]] = replacement
-        state.replacements[candidate["tool_use_id"]] = replacement
-        visible_size = visible_size - candidate["size"] + len(replacement)
-
-    for candidate in fresh_candidates:
-        state.seen_ids.add(candidate["tool_use_id"])
-
-    if not replacement_map:
-        return results
-
-    return [
-        {**r, "content": replacement_map[r["tool_use_id"]]}
-        if r["tool_use_id"] in replacement_map else r
-        for r in results
-    ]

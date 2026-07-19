@@ -9,20 +9,32 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from ..config.runtime import LEARN_CODE_PERMISSIONS_PATH
 from ..loop.messages import ChatMessage
 from ..context.token_estimator import CLEAR_MARKER
-from ..tools.permissions import PermissionRules, load_permission_rules
+from ..tools.permissions import PermissionRules
 
 
-MAX_TITLE_LENGTH = 60
+MAX_SESSION_NAME_LENGTH = 30
+MAX_TITLE_LENGTH = MAX_SESSION_NAME_LENGTH
 SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+
+
+def validate_session_name(name: str, label: str = "name") -> Optional[str]:
+    if not name:
+        return f"{label} is empty"
+    compact_name = "".join(ch for ch in name.strip() if not ch.isspace())
+    if not compact_name:
+        return f"{label} is empty"
+    if len(compact_name) > MAX_SESSION_NAME_LENGTH:
+        return f"{label} must be at most {MAX_SESSION_NAME_LENGTH} characters"
+    return None
 
 
 @dataclass
@@ -33,6 +45,9 @@ class SessionMeta:
     updated_at: int = 0
     message_count: int = 0
     workspace: str = ""
+    parent_session_id: str = ""
+    root_session_id: str = ""
+    character_name: str = ""
 
 
 @dataclass
@@ -40,6 +55,7 @@ class Session:
     meta: SessionMeta
     messages: list[ChatMessage] = field(default_factory=list)
     permissions: PermissionRules = field(default_factory=PermissionRules)
+    saved_event_tail: dict[str, Any] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -73,8 +89,36 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def _session_path(session_dir: str, session_id: str) -> str:
-    return os.path.join(session_dir, f"{session_id}.jsonl")
+def _session_folder_path(session_dir: str, session_id: str) -> str:
+    return os.path.join(session_dir, session_id)
+
+
+def _subsessions_folder_path(session_dir: str, root_session_id: str) -> str:
+    return os.path.join(_session_folder_path(session_dir, root_session_id), "subsessions")
+
+
+def _session_path(
+    session_dir: str,
+    session_id: str,
+    root_session_id: str = "",
+    parent_session_id: str = "",
+) -> str:
+    if parent_session_id or (root_session_id and root_session_id != session_id):
+        root_id = root_session_id or parent_session_id
+        return os.path.join(_subsessions_folder_path(session_dir, root_id), f"{session_id}.jsonl")
+    return os.path.join(_session_folder_path(session_dir, session_id), "main.jsonl")
+
+
+def _session_config_path(
+    session_dir: str,
+    session_id: str,
+    root_session_id: str = "",
+    parent_session_id: str = "",
+) -> str:
+    if parent_session_id or (root_session_id and root_session_id != session_id):
+        root_id = root_session_id or parent_session_id
+        return os.path.join(_subsessions_folder_path(session_dir, root_id), f"{session_id}.json")
+    return os.path.join(_session_folder_path(session_dir, session_id), "session.json")
 
 
 def _index_path(session_dir: str) -> str:
@@ -222,18 +266,89 @@ def _permissions_from_events(events: list[dict[str, Any]]) -> PermissionRules:
 
 
 def _write_event(path: str, event: dict[str, Any]) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def _append_events(session_dir: str, session_id: str, events: list[dict[str, Any]]) -> None:
+def _append_events(session_dir: str, session: Session, events: list[dict[str, Any]]) -> None:
     if not events:
         return
-    _ensure_dir(session_dir)
-    path = _session_path(session_dir, session_id)
+    path = _session_path(
+        session_dir,
+        session.meta.id,
+        root_session_id=session.meta.root_session_id,
+        parent_session_id=session.meta.parent_session_id,
+    )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8", newline="\n") as f:
         for event in events:
             f.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def _touch_session_log(session_dir: str, session: Session) -> None:
+    path = _session_path(
+        session_dir,
+        session.meta.id,
+        root_session_id=session.meta.root_session_id,
+        parent_session_id=session.meta.parent_session_id,
+    )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).touch(exist_ok=True)
+
+
+def _event_tail(events: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "message_ids": {event.get("uuid") for event in events if event.get("uuid")},
+        "last_uuid": _last_event_uuid(events),
+        "has_events": bool(events),
+    }
+
+
+def _read_session_config(
+    session_dir: str,
+    session_id: str,
+    root_session_id: str = "",
+    parent_session_id: str = "",
+) -> dict[str, Any]:
+    path = _session_config_path(
+        session_dir,
+        session_id,
+        root_session_id=root_session_id,
+        parent_session_id=parent_session_id,
+    )
+    if not os.path.isfile(path):
+        return {}
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else {}
+
+
+def save_session_config(session_dir: str, session: Session) -> None:
+    path = _session_config_path(
+        session_dir,
+        session.meta.id,
+        root_session_id=session.meta.root_session_id,
+        parent_session_id=session.meta.parent_session_id,
+    )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "id": session.meta.id,
+        "title": session.meta.title,
+        "workspace": session.meta.workspace,
+        "parent_session_id": session.meta.parent_session_id,
+        "root_session_id": session.meta.root_session_id,
+        "character_name": session.meta.character_name,
+        "permissions": session.permissions.to_dict(),
+        "created_at": session.meta.created_at,
+        "updated_at": session.meta.updated_at,
+    }
+    Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _sync_index_meta(session_dir, session.meta)
+
+
+def update_session_permissions(session_dir: str, session: Session) -> None:
+    session.meta.updated_at = _now_ms()
+    save_session_config(session_dir, session)
 
 
 def _meta_to_dict(meta: SessionMeta) -> dict[str, Any]:
@@ -244,6 +359,9 @@ def _meta_to_dict(meta: SessionMeta) -> dict[str, Any]:
         "updated_at": meta.updated_at,
         "message_count": meta.message_count,
         "workspace": meta.workspace,
+        "parent_session_id": meta.parent_session_id,
+        "root_session_id": meta.root_session_id,
+        "character_name": meta.character_name,
     }
 
 
@@ -255,6 +373,9 @@ def _meta_from_dict(data: dict[str, Any]) -> SessionMeta:
         updated_at=int(data.get("updated_at", 0) or 0),
         message_count=int(data.get("message_count", 0) or 0),
         workspace=str(data.get("workspace", "")),
+        parent_session_id=str(data.get("parent_session_id", "")),
+        root_session_id=str(data.get("root_session_id", "")),
+        character_name=str(data.get("character_name", "")),
     )
 
 
@@ -297,6 +418,8 @@ def _write_session_index(session_dir: str, metas: dict[str, SessionMeta]) -> Non
 
 
 def _sync_index_meta(session_dir: str, meta: SessionMeta) -> None:
+    if meta.parent_session_id:
+        return
     metas = _read_session_index(session_dir)
     metas[meta.id] = meta
     _write_session_index(session_dir, metas)
@@ -313,8 +436,8 @@ def _rebuild_session_index(session_dir: str) -> dict[str, SessionMeta]:
     _ensure_dir(session_dir)
     metas: dict[str, SessionMeta] = {}
     for entry in os.scandir(session_dir):
-        if entry.is_file() and entry.name.endswith(".jsonl"):
-            session_id = entry.name[:-len(".jsonl")]
+        if entry.is_dir() and os.path.isfile(os.path.join(entry.path, "main.jsonl")):
+            session_id = entry.name
             metas[session_id] = _session_meta_from_file(session_dir, session_id)
     _write_session_index(session_dir, metas)
     return metas
@@ -326,7 +449,15 @@ def _last_event_uuid(events: list[dict[str, Any]]) -> Optional[str]:
     return events[-1].get("uuid")
 
 
-def _message_event(message: ChatMessage, session_id: str, workspace: str, parent_uuid: Optional[str]) -> dict[str, Any]:
+def _message_event(
+    message: ChatMessage,
+    session_id: str,
+    workspace: str,
+    parent_uuid: Optional[str],
+    root_session_id: str = "",
+    parent_session_id: str = "",
+    character_name: str = "",
+) -> dict[str, Any]:
     event_uuid = _ensure_message_id(message)
     event: dict[str, Any] = {
         "type": _role_to_event_type(message.role),
@@ -337,6 +468,12 @@ def _message_event(message: ChatMessage, session_id: str, workspace: str, parent
         "cwd": workspace,
         "parent_uuid": parent_uuid,
     }
+    if root_session_id:
+        event["root_session_id"] = root_session_id
+    if parent_session_id:
+        event["parent_session_id"] = parent_session_id
+    if character_name:
+        event["character_name"] = character_name
     if message.role == "snip_boundary":
         event["snip_metadata"] = {
             "type": "snip_boundary",
@@ -459,38 +596,74 @@ def _title_from_events(events: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _session_meta_from_file(session_dir: str, session_id: str) -> SessionMeta:
-    path = _session_path(session_dir, session_id)
+def _session_meta_from_file(
+    session_dir: str,
+    session_id: str,
+    root_session_id: str = "",
+    parent_session_id: str = "",
+) -> SessionMeta:
+    path = _session_path(
+        session_dir,
+        session_id,
+        root_session_id=root_session_id,
+        parent_session_id=parent_session_id,
+    )
+    config = _read_session_config(
+        session_dir,
+        session_id,
+        root_session_id=root_session_id,
+        parent_session_id=parent_session_id,
+    )
     events = _read_events(path)
-    stat = os.stat(path)
+    stat = os.stat(path) if os.path.isfile(path) else None
     workspace = ""
     legacy_title = ""
+    character_name = ""
     for event in events:
         if event.get("cwd"):
             workspace = str(event["cwd"])
+        if event.get("character_name"):
+            character_name = str(event["character_name"])
+        if workspace and character_name:
             break
     meta_path = _legacy_meta_path(session_dir, session_id)
     if os.path.isfile(meta_path):
         meta_data = json.loads(Path(meta_path).read_text(encoding="utf-8"))
         workspace = workspace or str(meta_data.get("workspace", ""))
         legacy_title = str(meta_data.get("title", ""))
+    created_at = int(config.get("created_at", 0) or 0) or (int(stat.st_ctime * 1000) if stat else 0)
+    config_updated = int(config.get("updated_at", 0) or 0)
+    log_updated = int(stat.st_mtime * 1000) if stat else 0
+    updated_at = max(config_updated, log_updated)
     return SessionMeta(
         id=session_id,
-        title=_title_from_events(events) or legacy_title or f"Session {session_id}",
-        created_at=int(stat.st_ctime * 1000),
-        updated_at=int(stat.st_mtime * 1000),
+        title=str(config.get("title") or _title_from_events(events) or legacy_title or f"Session {session_id}"),
+        created_at=created_at,
+        updated_at=updated_at,
         message_count=sum(
             1 for event in events
             if isinstance(event.get("message"), dict)
             and event.get("type") != "todo_reminder"
         ),
-        workspace=workspace,
+        workspace=str(config.get("workspace") or workspace),
+        parent_session_id=parent_session_id,
+        root_session_id=root_session_id or session_id,
+        character_name=str(config.get("character_name") or character_name or "general-purpose"),
     )
 
 
-def create_session(session_dir: str, workspace: str = "", title: str = "") -> Session:
+def create_session(
+    session_dir: str,
+    workspace: str = "",
+    title: str = "",
+    parent_session_id: str = "",
+    root_session_id: str = "",
+    character_name: str = "",
+) -> Session:
     session_id = _generate_id()
     now = _now_ms()
+    root_id = root_session_id or parent_session_id or session_id
+    char_name = character_name or "general-purpose"
     session = Session(
         meta=SessionMeta(
             id=session_id,
@@ -498,13 +671,14 @@ def create_session(session_dir: str, workspace: str = "", title: str = "") -> Se
             created_at=now,
             updated_at=now,
             workspace=workspace,
+            parent_session_id=parent_session_id,
+            root_session_id=root_id,
+            character_name=char_name,
         ),
-        permissions=load_permission_rules(LEARN_CODE_PERMISSIONS_PATH),
+        permissions=PermissionRules(),
     )
-    if title:
-        rename_session(session_dir, session_id, title, workspace=workspace, create_if_missing=True)
-    else:
-        _sync_index_meta(session_dir, session.meta)
+    _touch_session_log(session_dir, session)
+    save_session_config(session_dir, session)
     return session
 
 
@@ -516,9 +690,9 @@ def list_sessions(session_dir: str) -> list[SessionMeta]:
     else:
         metas = _rebuild_session_index(session_dir)
     existing_ids = {
-        entry.name[:-len(".jsonl")]
+        entry.name
         for entry in os.scandir(session_dir)
-        if entry.is_file() and entry.name.endswith(".jsonl")
+        if entry.is_dir() and os.path.isfile(os.path.join(entry.path, "main.jsonl"))
     }
     if set(metas) != existing_ids:
         metas = _rebuild_session_index(session_dir)
@@ -527,11 +701,27 @@ def list_sessions(session_dir: str) -> list[SessionMeta]:
     return sessions
 
 
-def load_session(session_dir: str, session_id: str) -> Optional[Session]:
-    path = _session_path(session_dir, session_id)
+def load_session(
+    session_dir: str,
+    session_id: str,
+    root_session_id: str = "",
+    parent_session_id: str = "",
+) -> Optional[Session]:
+    path = _session_path(
+        session_dir,
+        session_id,
+        root_session_id=root_session_id,
+        parent_session_id=parent_session_id,
+    )
     if not os.path.isfile(path):
         return None
     events = _read_events(path)
+    config = _read_session_config(
+        session_dir,
+        session_id,
+        root_session_id=root_session_id,
+        parent_session_id=parent_session_id,
+    )
     active_events = _active_events(events)
     reconstructed_events = _reconstruct_microcompacted_events(_reconstruct_snipped_events(active_events))
     messages = [
@@ -539,15 +729,34 @@ def load_session(session_dir: str, session_id: str) -> Optional[Session]:
         for message in (_unwrap_message(event) for event in reconstructed_events)
         if message is not None
     ]
+    permissions = PermissionRules.from_dict(config.get("permissions", {}))
+    if not config:
+        permissions = _permissions_from_events(events)
     return Session(
-        meta=_session_meta_from_file(session_dir, session_id),
+        meta=_session_meta_from_file(
+            session_dir,
+            session_id,
+            root_session_id=root_session_id,
+            parent_session_id=parent_session_id,
+        ),
         messages=messages,
-        permissions=_permissions_from_events(events),
+        permissions=permissions,
+        saved_event_tail=_event_tail(events),
     )
 
 
-def load_transcript(session_dir: str, session_id: str) -> Optional[list[TranscriptItem]]:
-    path = _session_path(session_dir, session_id)
+def load_transcript(
+    session_dir: str,
+    session_id: str,
+    root_session_id: str = "",
+    parent_session_id: str = "",
+) -> Optional[list[TranscriptItem]]:
+    path = _session_path(
+        session_dir,
+        session_id,
+        root_session_id=root_session_id,
+        parent_session_id=parent_session_id,
+    )
     if not os.path.isfile(path):
         return None
     events = _read_events(path)
@@ -584,37 +793,47 @@ def load_transcript(session_dir: str, session_id: str) -> Optional[list[Transcri
 
 def save_session(session_dir: str, session: Session, already_saved_count: int = 0) -> None:
     _ensure_dir(session_dir)
-    path = _session_path(session_dir, session.meta.id)
-    existing_events = _read_events(path)
-    existing_ids = {event.get("uuid") for event in existing_events if event.get("uuid")}
-    parent_uuid = _last_event_uuid(existing_events)
+    _touch_session_log(session_dir, session)
+    tail = session.saved_event_tail
+    existing_ids = tail.setdefault("message_ids", set())
+    if not isinstance(existing_ids, set):
+        existing_ids = set(existing_ids)
+        tail["message_ids"] = existing_ids
+    parent_uuid = tail.get("last_uuid")
     messages = session.messages[1:] if session.messages and session.messages[0].role == "system" else session.messages
     events: list[dict[str, Any]] = []
-    current_permissions = _permissions_from_events(existing_events)
-    if current_permissions.to_dict() != session.permissions.to_dict():
-        permission_uuid = str(uuid.uuid4())
-        events.append({
-            "type": "permissions",
-            "permissions": session.permissions.to_dict(),
-            "uuid": permission_uuid,
-            "timestamp": _now_iso(),
-            "session_id": session.meta.id,
-            "cwd": session.meta.workspace,
-            "parent_uuid": parent_uuid,
-        })
-        parent_uuid = permission_uuid
 
     for index, message in enumerate(messages):
         if message.id and message.id in existing_ids:
             continue
         if not message.id and index < already_saved_count:
             continue
-        event = _message_event(message, session.meta.id, session.meta.workspace, parent_uuid)
+        event = _message_event(
+            message,
+            session.meta.id,
+            session.meta.workspace,
+            parent_uuid,
+            root_session_id=session.meta.root_session_id,
+            parent_session_id=session.meta.parent_session_id,
+            character_name=session.meta.character_name,
+        )
         parent_uuid = event["uuid"]
         events.append(event)
+        existing_ids.add(event["uuid"])
 
-    _append_events(session_dir, session.meta.id, events)
-    _sync_index_meta(session_dir, _session_meta_from_file(session_dir, session.meta.id))
+    _append_events(session_dir, session, events)
+    if events:
+        tail["last_uuid"] = events[-1]["uuid"]
+        tail["has_events"] = True
+    _sync_index_meta(
+        session_dir,
+        _session_meta_from_file(
+            session_dir,
+            session.meta.id,
+            root_session_id=session.meta.root_session_id,
+            parent_session_id=session.meta.parent_session_id,
+        ),
+    )
 
 
 def append_compact_boundary(
@@ -638,6 +857,7 @@ def append_compact_boundary(
         "session_id": session_id,
         "cwd": workspace,
         "parent_uuid": None,
+        "root_session_id": session_id,
         "logical_parent_uuid": _last_event_uuid(existing_events),
         "compact_metadata": {
             "trigger": trigger,
@@ -646,16 +866,17 @@ def append_compact_boundary(
         },
     }
     summary = ChatMessage.user(summary_text)
-    summary_event = _message_event(summary, session_id, workspace, boundary_uuid)
+    summary_event = _message_event(summary, session_id, workspace, boundary_uuid, root_session_id=session_id)
     parent_uuid = summary_event["uuid"]
     events = [boundary, summary_event]
     for message in retained_messages:
         if message.role == "system":
             continue
-        event = _message_event(message, session_id, workspace, parent_uuid)
+        event = _message_event(message, session_id, workspace, parent_uuid, root_session_id=session_id)
         parent_uuid = event["uuid"]
         events.append(event)
-    _append_events(session_dir, session_id, events)
+    session = Session(meta=SessionMeta(id=session_id, workspace=workspace, root_session_id=session_id))
+    _append_events(session_dir, session, events)
     _sync_index_meta(session_dir, _session_meta_from_file(session_dir, session_id))
 
 
@@ -669,18 +890,24 @@ def rename_session(
     path = _session_path(session_dir, session_id)
     if not create_if_missing and not os.path.isfile(path):
         return False
-    _ensure_dir(session_dir)
-    event = {
-        "type": "rename",
-        "title": new_title,
-        "uuid": str(uuid.uuid4()),
-        "timestamp": _now_iso(),
-        "session_id": session_id,
-        "cwd": workspace,
-        "parent_uuid": _last_event_uuid(_read_events(path)),
-    }
-    _write_event(path, event)
-    _sync_index_meta(session_dir, _session_meta_from_file(session_dir, session_id))
+    session = load_session(session_dir, session_id)
+    if session is None:
+        session = Session(
+            meta=SessionMeta(
+                id=session_id,
+                title=new_title,
+                workspace=workspace,
+                root_session_id=session_id,
+                character_name="general-purpose",
+            ),
+            permissions=PermissionRules(),
+        )
+        _touch_session_log(session_dir, session)
+    session.meta.title = new_title
+    if workspace:
+        session.meta.workspace = workspace
+    session.meta.updated_at = _now_ms()
+    save_session_config(session_dir, session)
     return True
 
 
@@ -692,6 +919,7 @@ def fork_session(session_dir: str, session_id: str) -> Optional[Session]:
     new_session = create_session(session_dir, workspace=source.meta.workspace)
     new_session.permissions = source.permissions.copy()
     new_session.messages = [ChatMessage.system("")] + source.messages
+    save_session_config(session_dir, new_session)
     save_session(session_dir, new_session)
 
     existing_titles = [s.title for s in list_sessions(session_dir)]
@@ -706,11 +934,15 @@ def fork_session(session_dir: str, session_id: str) -> Optional[Session]:
 
 
 def delete_session(session_dir: str, session_id: str) -> bool:
+    folder = _session_folder_path(session_dir, session_id)
     deleted = False
-    for path in (_session_path(session_dir, session_id), _legacy_meta_path(session_dir, session_id)):
-        if os.path.isfile(path):
-            os.remove(path)
-            deleted = True
+    if os.path.isdir(folder):
+        shutil.rmtree(folder)
+        deleted = True
+    meta_path = _legacy_meta_path(session_dir, session_id)
+    if os.path.isfile(meta_path):
+        os.remove(meta_path)
+        deleted = True
     if deleted:
         _remove_index_meta(session_dir, session_id)
     return deleted
@@ -722,14 +954,17 @@ def cleanup_expired_sessions(session_dir: str, max_age_ms: int = SESSION_RETENTI
     now = _now_ms()
     removed = 0
     for entry in os.scandir(session_dir):
-        if not entry.is_file() or not entry.name.endswith(".jsonl"):
+        if not entry.is_dir():
             continue
-        updated_at = int(entry.stat().st_mtime * 1000)
+        main_path = os.path.join(entry.path, "main.jsonl")
+        if not os.path.isfile(main_path):
+            continue
+        updated_at = int(os.stat(main_path).st_mtime * 1000)
         if now - updated_at > max_age_ms:
-            os.remove(entry.path)
+            shutil.rmtree(entry.path)
             removed += 1
-            _remove_index_meta(session_dir, entry.name[:-len(".jsonl")])
-            meta_path = _legacy_meta_path(session_dir, entry.name[:-len(".jsonl")])
+            _remove_index_meta(session_dir, entry.name)
+            meta_path = _legacy_meta_path(session_dir, entry.name)
             if os.path.isfile(meta_path):
                 os.remove(meta_path)
     return removed

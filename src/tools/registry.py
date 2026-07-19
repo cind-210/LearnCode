@@ -119,6 +119,14 @@ class ToolRegistry:
     def set_mcp_servers(self, servers: list[McpServerSummary]) -> None:
         self._metadata.mcp_servers = list(servers)
 
+    def metadata_copy(self) -> ToolRegistryMetadata:
+        return ToolRegistryMetadata(
+            source=self._metadata.source,
+            label=self._metadata.label,
+            skills=list(self._metadata.skills),
+            mcp_servers=list(self._metadata.mcp_servers),
+        )
+
     def add_tools(self, next_tools: list[ToolDefinition]) -> None:
         existing = {t.name for t in self._tools}
         for tool in next_tools:

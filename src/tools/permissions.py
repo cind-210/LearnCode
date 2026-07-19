@@ -20,7 +20,7 @@ from .command_permissions import (
 )
 
 if TYPE_CHECKING:
-    from ..agents.definition import AgentDefinition
+    from ..sessions.templates import SessionTemplate
 
 
 class PermissionMode(str, Enum):
@@ -79,9 +79,13 @@ class PermissionRules:
         )
 
     def allow_tool(self, tool_name: str) -> None:
+        _remove_rule(self.deny, tool_name)
+        _remove_rule(self.ask, tool_name)
         _add_rule(self.allow, tool_name)
 
     def deny_tool(self, tool_name: str) -> None:
+        _remove_rule(self.allow, tool_name)
+        _remove_rule(self.ask, tool_name)
         _add_rule(self.deny, tool_name)
 
 
@@ -104,6 +108,11 @@ def _add_rule(
 ) -> None:
     if rule not in rules:
         rules.append(rule)
+
+
+def _remove_rule(rules: list[str], rule: str) -> None:
+    while rule in rules:
+        rules.remove(rule)
 
 
 def _rule_matches(tool_name: str, rule: str) -> bool:
@@ -235,12 +244,12 @@ class PermissionResolver:
         for rule in rules.deny:
             if run_command_rule_matches_segment(rule, segment):
                 return PermissionDecision.DENY
-        for rule in rules.allow:
-            if run_command_rule_matches_segment(rule, segment):
-                return PermissionDecision.ALLOW
         for rule in rules.ask:
             if run_command_rule_matches_segment(rule, segment):
                 return PermissionDecision.ASK
+        for rule in rules.allow:
+            if run_command_rule_matches_segment(rule, segment):
+                return PermissionDecision.ALLOW
         return None
 
     async def _check_run_command(self, request: PermissionRequest) -> Optional[PermissionResponse]:
@@ -255,11 +264,10 @@ class PermissionResolver:
         parsed = await parse_command(command)
         request.segments = parsed.segments
         if not parsed.valid:
-            request.reason = f"Command requires permission because it could not be parsed for {parsed.shell}: {parsed.reason}"
-            request.suggested_rules = [command_rule(command)]
-            if self.callback:
-                return await self.callback(request)
-            return PermissionResponse(decision=PermissionDecision.DENY, reason=request.reason)
+            return PermissionResponse(
+                decision=PermissionDecision.DENY,
+                reason=f"Command parse failed for {parsed.shell}: {parsed.reason}",
+            )
 
         if not parsed.segments:
             return PermissionResponse(decision=PermissionDecision.ALLOW)
@@ -268,13 +276,13 @@ class PermissionResolver:
         if PermissionDecision.DENY in decisions:
             denied = parsed.segments[decisions.index(PermissionDecision.DENY)]
             return PermissionResponse(decision=PermissionDecision.DENY, reason=f"Command denied by rule: {denied}")
-        if all(decision == PermissionDecision.ALLOW for decision in decisions):
+        if PermissionDecision.ASK not in decisions:
             return PermissionResponse(decision=PermissionDecision.ALLOW)
 
         request.reason = "Command requires permission for one or more shell segments."
         request.suggested_rules = [
             command_prefix_rule(segment) for segment, decision in zip(parsed.segments, decisions)
-            if decision != PermissionDecision.ALLOW
+            if decision == PermissionDecision.ASK
         ]
         if self.callback:
             return await self.callback(request)
@@ -396,17 +404,17 @@ class Sandbox:
             app_state=self.app_state,
         )
 
-    def fork_for_agent_definition(
+    def fork_for_session_template(
         self,
-        agent: AgentDefinition,
-        agent_id: Optional[str] = None,
+        template: SessionTemplate,
+        session_id: Optional[str] = None,
     ) -> Sandbox:
-        allow_rules = agent.tools if agent.tools and agent.tools != ["*"] else None
+        allow_rules = template.tools if template.tools and template.tools != ["*"] else None
         return self.fork_for_agent(
-            agent_id=agent_id or agent.name,
+            agent_id=session_id or template.name,
             allow_rules=allow_rules,
-            deny_rules=agent.disallowed_tools,
-            permission_mode=agent.permission_mode,
+            deny_rules=template.disallowed_tools,
+            permission_mode=template.permission_mode,
         )
 
 

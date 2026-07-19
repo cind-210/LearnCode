@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import asyncio
 from unittest.mock import patch
 
-from src.tools.command_permissions import ParsedCommand
+from src.tools.command_permissions import ParsedCommand, parse_command, powershell_executable
 from src.tools.permissions import (
     PermissionConfig,
     PermissionDecision,
@@ -48,7 +49,7 @@ class RunCommandPermissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.decision, PermissionDecision.ALLOW)
 
-    async def test_prefix_does_not_match_partial_command_name(self) -> None:
+    async def test_prefix_does_not_match_partial_command_name_defaults_to_allow(self) -> None:
         calls: list[PermissionRequest] = []
 
         async def callback(request: PermissionRequest) -> PermissionResponse:
@@ -62,8 +63,8 @@ class RunCommandPermissionTests(unittest.IsolatedAsyncioTestCase):
         with _mock_parse(["git statusx --short"]):
             response = await resolver.check(_request("git statusx --short"))
 
-        self.assertEqual(response.decision, PermissionDecision.ASK)
-        self.assertEqual(calls[0].segments, ["git statusx --short"])
+        self.assertEqual(response.decision, PermissionDecision.ALLOW)
+        self.assertEqual(calls, [])
 
     async def test_compound_command_all_segments_must_be_allowed(self) -> None:
         resolver = _resolver(PermissionRules(
@@ -88,7 +89,7 @@ class RunCommandPermissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.decision, PermissionDecision.DENY)
         self.assertIn("Remove-Item x", response.reason)
 
-    async def test_compound_command_asks_for_unmatched_segments_only(self) -> None:
+    async def test_compound_command_asks_for_ask_segments_only(self) -> None:
         calls: list[PermissionRequest] = []
 
         async def callback(request: PermissionRequest) -> PermissionResponse:
@@ -96,7 +97,7 @@ class RunCommandPermissionTests(unittest.IsolatedAsyncioTestCase):
             return PermissionResponse(decision=PermissionDecision.ALWAYS, rules=request.suggested_rules)
 
         resolver = PermissionResolver(
-            PermissionConfig(permission_rules=PermissionRules(allow=["run_command(Get-ChildItem)"])),
+            PermissionConfig(permission_rules=PermissionRules(ask=["run_command(Write-Output:*)"])),
             callback=callback,
         )
         with _mock_parse(["Get-ChildItem", "Write-Output ok"]):
@@ -123,7 +124,7 @@ class RunCommandPermissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.decision, PermissionDecision.DENY)
 
-    async def test_unparseable_command_asks_with_exact_rule(self) -> None:
+    async def test_unparseable_command_is_denied_with_parse_failure(self) -> None:
         calls: list[PermissionRequest] = []
 
         async def callback(request: PermissionRequest) -> PermissionResponse:
@@ -134,15 +135,87 @@ class RunCommandPermissionTests(unittest.IsolatedAsyncioTestCase):
         with _mock_parse([], valid=False, reason="parser unavailable"):
             response = await resolver.check(_request("Get-ChildItem; Remove-Item x"))
 
-        self.assertEqual(response.decision, PermissionDecision.ASK)
-        self.assertEqual(calls[0].suggested_rules, ["run_command(Get-ChildItem; Remove-Item x)"])
-        self.assertIn("parser unavailable", calls[0].reason)
+        self.assertEqual(response.decision, PermissionDecision.DENY)
+        self.assertIn("Command parse failed", response.reason)
+        self.assertIn("parser unavailable", response.reason)
+        self.assertEqual(calls, [])
+
+    async def test_unparseable_command_does_not_request_ask_rule(self) -> None:
+        calls: list[PermissionRequest] = []
+
+        async def callback(request: PermissionRequest) -> PermissionResponse:
+            calls.append(request)
+            return PermissionResponse(decision=PermissionDecision.ASK)
+
+        resolver = PermissionResolver(
+            PermissionConfig(permission_rules=PermissionRules(ask=["run_command(Get-ChildItem; Remove-Item x)"])),
+            callback=callback,
+        )
+        with _mock_parse([], valid=False, reason="parser unavailable"):
+            response = await resolver.check(_request("Get-ChildItem; Remove-Item x"))
+
+        self.assertEqual(response.decision, PermissionDecision.DENY)
+        self.assertIn("Command parse failed", response.reason)
+        self.assertEqual(calls, [])
+
+    async def test_unparseable_command_fails_before_deny_rule_matching(self) -> None:
+        resolver = _resolver(PermissionRules(deny=["run_command(Get-ChildItem; Remove-Item x)"]))
+        with _mock_parse([], valid=False, reason="parser unavailable"):
+            response = await resolver.check(_request("Get-ChildItem; Remove-Item x"))
+
+        self.assertEqual(response.decision, PermissionDecision.DENY)
+        self.assertIn("Command parse failed", response.reason)
 
     async def test_empty_command_is_denied(self) -> None:
         resolver = _resolver(PermissionRules())
         response = await resolver.check(_request("  "))
 
         self.assertEqual(response.decision, PermissionDecision.DENY)
+
+
+@unittest.skipIf(powershell_executable() is None, "PowerShell parser is not available")
+class PowerShellAstParserTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        asyncio.get_running_loop().set_debug(False)
+
+    async def test_parses_semicolon_separated_commands(self) -> None:
+        parsed = await parse_command("Get-ChildItem; Write-Output ok; Remove-Item x")
+
+        self.assertTrue(parsed.valid, parsed.reason)
+        self.assertEqual(parsed.shell, "powershell")
+        self.assertEqual(parsed.segments, ["Get-ChildItem", "Write-Output ok", "Remove-Item x"])
+
+    async def test_parses_newline_separated_long_command(self) -> None:
+        command = "\n".join([
+            "Write-Output one",
+            "Write-Output two",
+            "Write-Output three",
+            "Write-Output four",
+            "Write-Output five",
+        ])
+
+        parsed = await parse_command(command)
+
+        self.assertTrue(parsed.valid, parsed.reason)
+        self.assertEqual(parsed.segments, [
+            "Write-Output one",
+            "Write-Output two",
+            "Write-Output three",
+            "Write-Output four",
+            "Write-Output five",
+        ])
+
+    async def test_parses_pipeline_segments(self) -> None:
+        parsed = await parse_command("Get-ChildItem | Select-Object Name")
+
+        self.assertTrue(parsed.valid, parsed.reason)
+        self.assertEqual(parsed.segments, ["Get-ChildItem", "Select-Object Name"])
+
+    async def test_parses_nested_commands_inside_control_flow(self) -> None:
+        parsed = await parse_command("if ($true) { Get-ChildItem; Remove-Item x }")
+
+        self.assertTrue(parsed.valid, parsed.reason)
+        self.assertEqual(parsed.segments, ["Get-ChildItem", "Remove-Item x"])
 
 
 if __name__ == "__main__":

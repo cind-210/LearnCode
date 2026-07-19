@@ -24,9 +24,12 @@ from ..loop.runner import (
 )
 from ..models.anthropic import AnthropicModelAdapter
 from ..models.openai import OpenAIModelAdapter
+from ..sessions.subsessions import SubSessionRuntime
+from ..sessions.characters import ensure_general_purpose_character, load_characters, save_character
 from ..config.runtime import load_runtime_config
 from ..mcp.client import build_mcp_registry
 from ..tools.permissions import PermissionDecision, PermissionMode, PermissionRequest, PermissionResponse
+from ..tools.permissions import PermissionRules
 from ..sessions.store import (
     append_compact_boundary,
     cleanup_expired_sessions,
@@ -38,9 +41,12 @@ from ..sessions.store import (
     load_transcript,
     rename_session,
     save_session,
+    update_session_permissions,
+    validate_session_name,
     Session,
 )
 from ..tools.builtin import build_builtin_registry
+from ..tools.subsession_tools import build_subsession_tools
 from ..tools.registry import ToolRegistry
 from ..loop.messages import ChatMessage, ModelAdapter
 
@@ -86,31 +92,38 @@ def _session_todos(session: Optional[Session]) -> list[dict[str, Any]]:
     return extract_todos_from_messages(session.messages) if session else []
 
 
-def _is_cjk_char(ch: str) -> bool:
-    code = ord(ch)
-    return (
-        0x3400 <= code <= 0x4DBF
-        or 0x4E00 <= code <= 0x9FFF
-        or 0xF900 <= code <= 0xFAFF
-        or 0x3040 <= code <= 0x30FF
-        or 0xAC00 <= code <= 0xD7AF
-    )
+def _subsession_payload(runtime: SubSessionRuntime, parent_session_id: str) -> list[dict[str, Any]]:
+    loaded = {
+        item.link.id: item
+        for item in runtime.list_sessions(parent_session_id)
+    }
+    payload = []
+    for link in runtime.list_links(SESSION_DIR, parent_session_id):
+        loaded_item = loaded.get(link.id)
+        payload.append({
+            "id": link.id,
+            "name": link.name,
+            "description": link.description,
+            "character": link.character,
+            "updated_at": link.updated_at,
+            "status": loaded_item.status if loaded_item else "idle-on-disk",
+            "parent_session_id": parent_session_id,
+        })
+    return payload
+
+
+def _characters_payload() -> list[dict[str, str]]:
+    return [
+        {
+            "name": character.name,
+            "description": character.description,
+        }
+        for character in load_characters()
+    ]
 
 
 def _validate_ai_session_title(title: str) -> Optional[str]:
-    if not title:
-        return "title is empty"
-    compact_title = "".join(ch for ch in title if not ch.isspace())
-    if not compact_title:
-        return "title is empty"
-    if any(not (ch.isalnum() or ch.isspace()) for ch in title):
-        return "title must not contain punctuation"
-    if any(_is_cjk_char(ch) for ch in compact_title):
-        if len(compact_title) > 10:
-            return "Chinese title must be at most 10 characters"
-    elif len(compact_title) > 20:
-        return "English title must be at most 20 characters"
-    return None
+    return validate_session_name(title, "title")
 
 
 async def _get_model_adapter(tools: Optional[ToolRegistry] = None) -> ModelAdapter:
@@ -134,6 +147,11 @@ class WebAppState:
     tool_registry: Optional[ToolRegistry] = None
     mcp_config_key: str = ""
     mcp_servers: Optional[list[dict[str, Any]]] = None
+    subsession_runtime: Optional[SubSessionRuntime] = None
+
+    def __post_init__(self) -> None:
+        if self.subsession_runtime is None:
+            self.subsession_runtime = SubSessionRuntime()
 
     async def ensure_tools(self) -> ToolRegistry:
         runtime = await load_runtime_config()
@@ -143,6 +161,7 @@ class WebAppState:
 
         await self.close()
         builtin_registry = build_builtin_registry()
+        builtin_registry.add_tools(build_subsession_tools(load_characters()))
         mcp_registry = None
         if runtime.mcp_servers:
             mcp_registry, _ = await build_mcp_registry(runtime.mcp_servers)
@@ -237,6 +256,7 @@ async def websocket_endpoint(ws: WebSocket):
             await ws.send_text(json.dumps({"type": event_type, "data": data}, ensure_ascii=False, default=str))
 
     await send_event("workspace", {"workspace": APP_WORKSPACE})
+    await send_event("characters", _characters_payload())
     sessions = list_sessions(SESSION_DIR)
     await send_event("sessions", [{"id": s.id, "title": s.title, "updated_at": s.updated_at} for s in sessions])
 
@@ -263,10 +283,10 @@ async def websocket_endpoint(ws: WebSocket):
                     if session:
                         state = AgentLoopState(messages=session.messages)
                     else:
-                        session = create_session(SESSION_DIR, workspace=workspace, title="New Session")
-                        created_new_session = True
-                        state = AgentLoopState(messages=[])
+                        await send_event("error", f"Session not found: {session_id}")
+                        continue
                 else:
+                    ensure_general_purpose_character()
                     session = create_session(SESSION_DIR, workspace=workspace, title="New Session")
                     created_new_session = True
                     state = AgentLoopState(messages=[])
@@ -288,11 +308,17 @@ async def websocket_endpoint(ws: WebSocket):
                 tools = await app_state.ensure_tools()
                 await send_event("mcp_servers", app_state.mcp_servers or [])
                 adapter = await _get_model_adapter(tools)
+                runtime = await load_runtime_config()
 
                 config = AgentLoopConfig(
                     workspace=workspace,
+                    session_id=session.meta.id,
+                    character_name=session.meta.character_name,
+                    subsession_runtime=app_state.subsession_runtime,
                     permission_mode=PermissionMode.DEFAULT,
                     permissions=session.permissions,
+                    max_loaded_subsessions=runtime.max_loaded_subsessions,
+                    session_dir=SESSION_DIR,
                 )
 
                 async def on_step(step):
@@ -446,18 +472,30 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 raw_decision = req.get("decision", "deny")
                 decision = PermissionDecision(raw_decision)
+                scope = str(req.get("scope") or "session")
                 tool_name = req.get("tool_name", "")
                 raw_rules = req.get("rules", [])
                 rules = [rule for rule in raw_rules if isinstance(rule, str)] if isinstance(raw_rules, list) else []
                 if session and tool_name:
-                    if decision == PermissionDecision.ALWAYS:
+                    if scope == "character" and decision in (PermissionDecision.ALWAYS, PermissionDecision.NEVER):
+                        character = next(
+                            (item for item in load_characters() if item.name == session.meta.character_name),
+                            None,
+                        )
+                        if character:
+                            for rule in rules or [tool_name]:
+                                if decision == PermissionDecision.ALWAYS:
+                                    character.permissions.allow_tool(rule)
+                                else:
+                                    character.permissions.deny_tool(rule)
+                            save_character(character)
+                    elif scope == "session" and decision in (PermissionDecision.ALWAYS, PermissionDecision.NEVER):
                         for rule in rules or [tool_name]:
-                            session.permissions.allow_tool(rule)
-                        save_session(SESSION_DIR, session)
-                    elif decision == PermissionDecision.NEVER:
-                        for rule in rules or [tool_name]:
-                            session.permissions.deny_tool(rule)
-                        save_session(SESSION_DIR, session)
+                            if decision == PermissionDecision.ALWAYS:
+                                session.permissions.allow_tool(rule)
+                            else:
+                                session.permissions.deny_tool(rule)
+                        update_session_permissions(SESSION_DIR, session)
                 future.set_result(PermissionResponse(
                     decision=decision,
                     reason=req.get("reason", ""),
@@ -536,9 +574,7 @@ async def websocket_endpoint(ws: WebSocket):
                             name_prompt = [
                                 ChatMessage.system(
                                     "Generate a short session title. "
-                                    "If the title is Chinese, use at most 10 Chinese characters. "
-                                    "If the title is English, use at most 20 characters. "
-                                    "Do not use punctuation. "
+                                    "Use at most 30 characters, regardless of language. "
                                     "Reply with ONLY the title text, no quotes, no explanation."
                                 ),
                                 ChatMessage.user(f"Conversation: {prompt_text[:200]}" if prompt_text else "New conversation"),
@@ -589,6 +625,53 @@ async def websocket_endpoint(ws: WebSocket):
                                 for m in transcript
                             ],
                         })
+
+            elif action == "list_subsessions":
+                parent_id = req.get("parent_session_id", "")
+                if parent_id:
+                    await send_event("subsessions", {
+                        "parent_session_id": parent_id,
+                        "children": _subsession_payload(app_state.subsession_runtime, parent_id),
+                    })
+
+            elif action == "load_subsession":
+                parent_id = req.get("parent_session_id", "")
+                child_id = req.get("session_id", "")
+                if parent_id and child_id:
+                    child = load_session(
+                        SESSION_DIR,
+                        child_id,
+                        root_session_id=parent_id,
+                        parent_session_id=parent_id,
+                    )
+                    transcript = load_transcript(
+                        SESSION_DIR,
+                        child_id,
+                        root_session_id=parent_id,
+                        parent_session_id=parent_id,
+                    )
+                    if child and transcript is not None:
+                        await send_event("session_loaded", {
+                            "id": child.meta.id,
+                            "title": child.meta.title,
+                            "message_count": len(transcript),
+                            "todos": extract_todos_from_messages(child.messages),
+                            "read_only": True,
+                            "parent_session_id": parent_id,
+                            "messages": [
+                                {
+                                    "role": m.role,
+                                    "content": m.content,
+                                    "blocks": m.blocks,
+                                    "tool_name": m.tool_name,
+                                    "input": m.input,
+                                    "is_error": m.is_error,
+                                }
+                                for m in transcript
+                            ],
+                        })
+                    else:
+                        await send_event("error", "SubSession not found")
 
             elif action == "new_session":
                 session = create_session(SESSION_DIR, workspace=APP_WORKSPACE, title="New Session")
