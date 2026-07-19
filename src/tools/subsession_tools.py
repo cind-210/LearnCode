@@ -432,7 +432,7 @@ def _fork_subsession_description(characters: list[Character]) -> str:
 def _permissions_schema() -> dict[str, Any]:
     return {
         "type": "object",
-        "description": "Optional child session permission rules.",
+        "description": "Optional child permission overrides. They override character rules and inherit parent allow/deny/ask.",
         "properties": {
             "allow": {"type": "array", "items": {"type": "string"}},
             "deny": {"type": "array", "items": {"type": "string"}},
