@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Awaitable
 
@@ -130,7 +131,9 @@ def _merge_permission_rules(base: PermissionRules, overlay: PermissionRules) -> 
 
 
 def _get_tool_call_id(call: ToolCall) -> str:
-    return call.id or f"tc-{int(time.time() * 1000)}"
+    if not call.id:
+        call.id = f"tc-{uuid.uuid4().hex[:12]}"
+    return call.id
 
 
 def _build_tool_call_message(call: ToolCall) -> ChatMessage:
@@ -570,6 +573,9 @@ async def run_agent_loop(
                     await on_messages_changed(state.messages)
 
             step = await model_adapter.next(state.messages, on_delta=on_delta)
+            if step.calls:
+                for call in step.calls:
+                    _get_tool_call_id(call)
 
             if on_step:
                 await on_step(step)

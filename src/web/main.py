@@ -309,6 +309,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await send_event("mcp_servers", app_state.mcp_servers or [])
                 adapter = await _get_model_adapter(tools)
                 runtime = await load_runtime_config()
+                sent_tool_result_ids: set[str] = set()
 
                 config = AgentLoopConfig(
                     workspace=workspace,
@@ -346,6 +347,19 @@ async def websocket_endpoint(ws: WebSocket):
                         return
                     session.messages = messages
                     save_session(SESSION_DIR, session)
+                    for message in messages:
+                        if message.role != "tool_result" or message.tool_name == "TodoWrite":
+                            continue
+                        result_id = message.tool_use_id or message.id or ""
+                        if not result_id or result_id in sent_tool_result_ids:
+                            continue
+                        sent_tool_result_ids.add(result_id)
+                        await send_event("tool_result", {
+                            "tool_use_id": message.tool_use_id,
+                            "tool_name": message.tool_name,
+                            "content": message.content,
+                            "is_error": message.is_error,
+                        })
 
                 async def on_todos_changed(todos):
                     if run_id != active_run_id:
@@ -618,6 +632,7 @@ async def websocket_endpoint(ws: WebSocket):
                                     "role": m.role,
                                     "content": m.content,
                                     "blocks": m.blocks,
+                                    "tool_use_id": m.tool_use_id,
                                     "tool_name": m.tool_name,
                                     "input": m.input,
                                     "is_error": m.is_error,
@@ -663,6 +678,7 @@ async def websocket_endpoint(ws: WebSocket):
                                     "role": m.role,
                                     "content": m.content,
                                     "blocks": m.blocks,
+                                    "tool_use_id": m.tool_use_id,
                                     "tool_name": m.tool_name,
                                     "input": m.input,
                                     "is_error": m.is_error,

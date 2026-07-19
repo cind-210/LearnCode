@@ -440,16 +440,12 @@
       background: #f7f7f7;
     }
 
-    .loop-event.collapsible .loop-event-label {
+    .loop-event.has-result .loop-event-label {
       cursor: pointer;
       user-select: none;
     }
 
-    .loop-event.collapsed .loop-event-label {
-      border-bottom: 0;
-    }
-
-    .loop-event.collapsed .loop-event-body {
+    .loop-event:not(.result-visible) .loop-event-result {
       display: none;
     }
 
@@ -463,6 +459,16 @@
 
     .loop-event-body {
       padding: 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: #555;
+    }
+
+    .loop-event-result {
+      margin: 0 8px 8px 22px;
+      padding: 8px;
+      border-left: 3px solid #ead7b8;
+      background: #fffdf8;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       color: #555;
@@ -695,6 +701,7 @@
     let currentLoopContainer = null;
     let currentStreamEvent = null;
     let currentTodos = [];
+    const currentLoopToolEvents = new Map();
     const pendingPermissionCards = new Map();
     const pendingPermissionRules = new Map();
     const namingSessions = new Set();
@@ -756,7 +763,7 @@
             if (data.calls) {
               for (const c of data.calls) {
                 if (c.tool_name !== 'TodoWrite') {
-                  appendLoopEvent('Tool: ' + c.tool_name, JSON.stringify(c.input, null, 2), 'tool');
+                  appendToolCallEvent(c.id, c.tool_name, c.input);
                 }
               }
             }
@@ -771,6 +778,9 @@
           break;
         case 'delta':
           handleDelta(data);
+          break;
+        case 'tool_result':
+          attachToolResult(data.tool_use_id, (data.is_error ? '[Error] ' : '') + (data.content || ''));
           break;
         case 'done':
           processing = false;
@@ -838,6 +848,7 @@
           document.getElementById('messages').innerHTML = '';
           currentLoopContainer = null;
           currentStreamEvent = null;
+          currentLoopToolEvents.clear();
           pendingPermissionCards.clear();
           pendingPermissionRules.clear();
           renderTodos(data.todos || []);
@@ -854,11 +865,11 @@
                 if (m.content) appendLoopEvent('Assistant', m.content, 'assistant');
               } else if (m.role === 'assistant_tool_call') {
                 if (m.tool_name !== 'TodoWrite') {
-                  appendLoopEvent('Tool: ' + (m.tool_name || ''), JSON.stringify(m.input || {}, null, 2), 'tool');
+                  appendToolCallEvent(m.tool_use_id, m.tool_name || '', m.input || {});
                 }
               } else if (m.role === 'tool_result') {
                 if (m.tool_name !== 'TodoWrite') {
-                  appendLoopEvent('Result: ' + (m.tool_name || ''), (m.is_error ? '[Error] ' : '') + (m.content || ''), 'tool', true);
+                  attachToolResult(m.tool_use_id, (m.is_error ? '[Error] ' : '') + (m.content || ''));
                 }
               } else if (m.role === 'assistant_thinking') {
                 appendLoopEvent('Thinking', formatThinkingBlocks(m.blocks || []), 'thinking');
@@ -892,6 +903,7 @@
             document.getElementById('messages').innerHTML = '';
             currentLoopContainer = null;
             currentStreamEvent = null;
+            currentLoopToolEvents.clear();
             renderTodos([]);
             addMessage('compact', 'New session: ' + data.title);
           }
@@ -1058,23 +1070,15 @@
       return currentLoopContainer;
     }
 
-    function appendLoopEvent(label, content, kind, collapsed) {
+    function appendLoopEvent(label, content, kind) {
       const group = ensureLoopContainer();
       group.items += 1;
       group.count.textContent = group.items + (group.items === 1 ? ' item' : ' items');
       const item = document.createElement('div');
       item.className = 'loop-event ' + (kind || '');
-      if (collapsed) {
-        item.classList.add('collapsible', 'collapsed');
-      }
       const eventLabel = document.createElement('div');
       eventLabel.className = 'loop-event-label';
       eventLabel.textContent = label;
-      if (collapsed) {
-        eventLabel.addEventListener('click', () => {
-          item.classList.toggle('collapsed');
-        });
-      }
       const eventBody = document.createElement('div');
       eventBody.className = 'loop-event-body';
       eventBody.textContent = content;
@@ -1084,6 +1088,33 @@
       group.body.scrollTop = group.body.scrollHeight;
       const messages = document.getElementById('messages');
       messages.scrollTop = messages.scrollHeight;
+      return item;
+    }
+
+    function appendToolCallEvent(toolUseId, toolName, input) {
+      const item = appendLoopEvent('Tool: ' + (toolName || ''), JSON.stringify(input || {}, null, 2), 'tool');
+      if (toolUseId) {
+        currentLoopToolEvents.set(toolUseId, item);
+      }
+      item.querySelector('.loop-event-label').addEventListener('click', () => {
+        if (item.querySelector('.loop-event-result')) {
+          item.classList.toggle('result-visible');
+        }
+      });
+      return item;
+    }
+
+    function attachToolResult(toolUseId, content) {
+      const item = toolUseId ? currentLoopToolEvents.get(toolUseId) : null;
+      if (!item) return;
+      let result = item.querySelector('.loop-event-result');
+      if (!result) {
+        item.classList.add('has-result');
+        result = document.createElement('div');
+        result.className = 'loop-event-result';
+        item.appendChild(result);
+      }
+      result.textContent = content;
     }
 
     function appendStreamingLoopEvent(label, kind) {
@@ -1174,6 +1205,7 @@
         return;
       }
       collapseLoopContainer();
+      currentLoopToolEvents.clear();
       addMessage('user', text);
       input.value = '';
       processing = true;

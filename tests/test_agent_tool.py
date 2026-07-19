@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 from unittest.mock import patch
 
-from src.loop.messages import AgentStep, ChatMessage
-from src.loop.runner import AgentLoopConfig, _build_assistant_message, _update_character_experiences
+from src.loop.messages import AgentStep, ChatMessage, ToolCall
+from src.loop.runner import AgentLoopConfig, _build_assistant_message, _build_tool_call_message, _update_character_experiences
 from src.models.anthropic import _to_anthropic_messages
 from src.models.openai import _to_openai_messages
 from src.sessions.characters import Character, ensure_general_purpose_character, load_characters
@@ -676,6 +676,32 @@ class SessionStoreTests(unittest.TestCase):
 
             self.assertIsNotNone(transcript)
             self.assertEqual(transcript[0].content, "child message")
+
+    def test_load_transcript_preserves_tool_use_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = str(Path(tmp) / ".sessions")
+            session = create_session(session_dir, workspace=tmp, title="Main")
+            session.messages = [
+                ChatMessage.tool_call("call-1", "read_file", {"path": "a.txt"}, timestamp=1),
+                ChatMessage.tool_result("call-1", "read_file", "hello", timestamp=2),
+            ]
+            save_session(session_dir, session)
+
+            transcript = load_transcript(session_dir, session.id)
+
+            self.assertIsNotNone(transcript)
+            self.assertEqual(transcript[0].tool_use_id, "call-1")
+            self.assertEqual(transcript[1].tool_use_id, "call-1")
+
+    def test_tool_call_id_is_stable_after_generation(self) -> None:
+        call = ToolCall(id="", tool_name="read_file", input={"path": "a.txt"})
+
+        first = _build_tool_call_message(call)
+        second = _build_tool_call_message(call)
+
+        self.assertTrue(call.id)
+        self.assertEqual(first.tool_use_id, call.id)
+        self.assertEqual(second.tool_use_id, call.id)
 
     def test_model_adapters_send_assistant_final_as_assistant(self) -> None:
         messages = [
