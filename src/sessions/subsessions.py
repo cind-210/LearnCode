@@ -84,7 +84,7 @@ class SubSessionRuntime:
         description: str,
         character: Character | None,
         prompt: str,
-        prompt_addition: str = "",
+        request: str = "",
         workspace: str,
         config: AgentLoopConfig,
         registry: ToolRegistry,
@@ -107,7 +107,7 @@ class SubSessionRuntime:
             name=name or child.meta.id,
             description=description,
             character=character.name if character else "",
-            prompt_addition=prompt_addition,
+            prompt_addition=prompt,
             parent_session_id=parent_session_id,
             workspace=workspace,
             created_at=now,
@@ -115,15 +115,17 @@ class SubSessionRuntime:
         )
         self._add_link(config.session_dir, link)
         loaded = self._load_into_memory(link, child)
-        output = await self.send_message(
-            parent_session_id=parent_session_id,
-            target=child.meta.id,
-            message=prompt,
-            character=character,
-            config=config,
-            registry=registry,
-            model_factory=model_factory,
-        )
+        output = "Created idle child session without running the loop."
+        if request.strip():
+            output = await self.send_message(
+                parent_session_id=parent_session_id,
+                target=child.meta.id,
+                message=request,
+                character=character,
+                config=config,
+                registry=registry,
+                model_factory=model_factory,
+            )
         return loaded, output
 
     def create_empty_session(
@@ -173,7 +175,7 @@ class SubSessionRuntime:
         description: str,
         character: Character | None,
         prompt: str,
-        prompt_addition: str = "",
+        request: str = "",
         workspace: str,
         source_messages: list[ChatMessage],
         config: AgentLoopConfig,
@@ -198,7 +200,7 @@ class SubSessionRuntime:
             name=name or child.meta.id,
             description=description,
             character=character.name if character else "",
-            prompt_addition=prompt_addition,
+            prompt_addition=prompt,
             parent_session_id=parent_session_id,
             workspace=workspace,
             created_at=now,
@@ -206,15 +208,17 @@ class SubSessionRuntime:
         )
         self._add_link(config.session_dir, link)
         loaded = self._load_into_memory(link, child)
-        output = await self.send_message(
-            parent_session_id=parent_session_id,
-            target=child.meta.id,
-            message=prompt,
-            character=character,
-            config=config,
-            registry=registry,
-            model_factory=model_factory,
-        )
+        output = "Created idle forked child session without running the loop."
+        if request.strip():
+            output = await self.send_message(
+                parent_session_id=parent_session_id,
+                target=child.meta.id,
+                message=request,
+                character=character,
+                config=config,
+                registry=registry,
+                model_factory=model_factory,
+            )
         return loaded, output
 
     def ensure_loaded_session(

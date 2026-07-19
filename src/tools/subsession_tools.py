@@ -64,19 +64,18 @@ def build_new_subsession_tool(characters: list[Character] | None = None) -> Tool
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The complete initial prompt for the child session.",
+                    "description": "Optional session-specific system prompt addition layered on top of the character prompt.",
+                },
+                "request": {
+                    "type": "string",
+                    "description": "Optional first user request to send to the child session. If empty, the child session is created idle without running its loop.",
                 },
                 "character": {
                     "type": "string",
                     "description": "Optional character to use. Omit it to create a plain child session.",
                 },
-                "promptAddition": {
-                    "type": "string",
-                    "description": "Optional session-specific system prompt addition layered on top of the character prompt.",
-                },
                 "permissions": _permissions_schema(),
             },
-            "required": ["prompt"],
         },
         run=_run_new_subsession_tool,
     )
@@ -99,19 +98,18 @@ def build_fork_subsession_tool(characters: list[Character] | None = None) -> Too
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "The first task message to send after forking the parent context.",
+                    "description": "Optional session-specific system prompt addition layered on top of the character prompt.",
+                },
+                "request": {
+                    "type": "string",
+                    "description": "Optional first user request to send after forking the parent context. If empty, the forked child session is created idle without running its loop.",
                 },
                 "character": {
                     "type": "string",
                     "description": "Optional character to use. Omit it to create a plain forked child session.",
                 },
-                "promptAddition": {
-                    "type": "string",
-                    "description": "Optional session-specific system prompt addition layered on top of the character prompt.",
-                },
                 "permissions": _permissions_schema(),
             },
-            "required": ["prompt"],
         },
         run=_run_fork_subsession_tool,
     )
@@ -168,8 +166,7 @@ async def _run_list_subsessions_tool(input: dict, context: ToolContext) -> ToolR
 
 async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolResult:
     prompt = str(input.get("prompt") or "").strip()
-    if not prompt:
-        return ToolResult(ok=False, output="NewSubSession prompt is required.")
+    request = str(input.get("request") or "").strip()
 
     runtime = _runtime(context)
     registry = _registry(context)
@@ -198,7 +195,7 @@ async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolRes
         description=description,
         character=character,
         prompt=prompt,
-        prompt_addition=str(input.get("promptAddition") or ""),
+        request=request,
         workspace=workspace,
         config=config,
         registry=sub_registry,
@@ -218,8 +215,7 @@ async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolRes
 
 async def _run_fork_subsession_tool(input: dict, context: ToolContext) -> ToolResult:
     prompt = str(input.get("prompt") or "").strip()
-    if not prompt:
-        return ToolResult(ok=False, output="ForkSubSession prompt is required.")
+    request = str(input.get("request") or "").strip()
 
     source_messages = context.get("fork_source_messages")
     if not isinstance(source_messages, list):
@@ -254,7 +250,7 @@ async def _run_fork_subsession_tool(input: dict, context: ToolContext) -> ToolRe
         description=description,
         character=character,
         prompt=prompt,
-        prompt_addition=str(input.get("promptAddition") or ""),
+        request=request,
         workspace=workspace,
         source_messages=source_messages,
         config=config,
@@ -423,7 +419,7 @@ def _new_subsession_description(characters: list[Character]) -> str:
 
 def _fork_subsession_description(characters: list[Character]) -> str:
     base = (
-        "Fork the current parent context into a child session, then send it an initial task message. "
+        "Fork the current parent context into a child session, optionally sending it an initial request message. "
         "Parameters match NewSubSession, but the child starts with the parent's current conversation context."
     )
     if not characters:
