@@ -19,7 +19,6 @@ CHARS_PER_TOKEN: dict[str, float] = {
     "user": 3.0,
     "assistant_thinking": 3.0,
     "assistant": 3.5,
-    "assistant_final": 3.5,
     "assistant_progress": 3.5,
     "assistant_tool_call": 2.5,
     "tool_result": 2.0,
@@ -82,7 +81,7 @@ class ContextStats:
 
 def _message_content_length(message: ChatMessage) -> int:
     import json
-    if message.role in ("system", "user", "assistant", "assistant_final", "assistant_progress"):
+    if message.role in ("system", "user", "assistant", "assistant_progress"):
         return len(message.content)
     if message.role == "assistant_thinking":
         try:
@@ -110,7 +109,7 @@ def estimate_messages_tokens(messages: list[ChatMessage]) -> int:
 
 
 def _message_provider_usage(message: ChatMessage) -> Optional[ProviderUsage]:
-    if message.role in ("assistant", "assistant_final", "assistant_progress", "assistant_tool_call"):
+    if message.role in ("assistant", "assistant_progress", "assistant_tool_call"):
         if message.provider_usage and not message.usage_stale:
             return message.provider_usage
     return None
@@ -144,7 +143,7 @@ def token_count_with_estimation(messages: list[ChatMessage]) -> TokenAccountingR
 
 
 def mark_provider_usage_stale(message: ChatMessage, reason: str) -> ChatMessage:
-    if message.role in ("assistant", "assistant_final", "assistant_progress", "assistant_tool_call"):
+    if message.role in ("assistant", "assistant_progress", "assistant_tool_call"):
         if message.provider_usage:
             message.usage_stale = True
             message.usage_stale_reason = reason

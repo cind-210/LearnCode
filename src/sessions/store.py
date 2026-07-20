@@ -207,7 +207,6 @@ def _role_to_event_type(role: str) -> str:
         "system": "system",
         "user": "user",
         "assistant": "assistant",
-        "assistant_final": "assistant_final",
         "assistant_thinking": "thinking",
         "assistant_progress": "progress",
         "assistant_tool_call": "tool_call",

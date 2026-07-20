@@ -84,7 +84,7 @@ def messages_to_text(messages: list[ChatMessage]) -> str:
     for msg in messages:
         if msg.role == "user":
             parts.append(f"[User]: {msg.content}")
-        elif msg.role in ("assistant", "assistant_final", "assistant_progress"):
+        elif msg.role in ("assistant", "assistant_progress"):
             parts.append(f"[Assistant]: {msg.content}")
         elif msg.role == "assistant_thinking":
             parts.append("[Assistant Thinking]: preserved provider reasoning block")
