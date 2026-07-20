@@ -74,6 +74,7 @@ class AgentLoopConfig:
     session_id: str = ""
     character_name: str = ""
     subsession_runtime: Any = None
+    subsession_event_sender: Any = None
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     additional_directories: list[str] = field(default_factory=list)
     permissions: Optional[PermissionRules] = None
@@ -557,6 +558,7 @@ async def run_agent_loop(
         "loop_config": config,
         "characters": load_characters(),
         "subsession_runtime": subsession_runtime,
+        "subsession_event_sender": config.subsession_event_sender,
         "session_id": config.session_id,
         "character_name": config.character_name,
     })

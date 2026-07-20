@@ -6,8 +6,9 @@ import json
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from ..loop.messages import AgentStep
 from ..loop.messages import ChatMessage
 from ..loop.runner import AgentLoopConfig, AgentLoopState, run_agent_loop
 from ..tools.permissions import PermissionRules
@@ -90,6 +91,7 @@ class SubSessionRuntime:
         registry: ToolRegistry,
         model_factory: Any,
         permissions: PermissionRules,
+        event_sender: dict[str, Any] | None = None,
     ) -> tuple[LoadedSubSession, str]:
         child = create_session(
             config.session_dir,
@@ -125,6 +127,7 @@ class SubSessionRuntime:
                 config=config,
                 registry=registry,
                 model_factory=model_factory,
+                **(event_sender or {}),
             )
         return loaded, output
 
@@ -182,6 +185,7 @@ class SubSessionRuntime:
         registry: ToolRegistry,
         model_factory: Any,
         permissions: PermissionRules,
+        event_sender: dict[str, Any] | None = None,
     ) -> tuple[LoadedSubSession, str]:
         child = create_session(
             config.session_dir,
@@ -218,6 +222,7 @@ class SubSessionRuntime:
                 config=config,
                 registry=registry,
                 model_factory=model_factory,
+                **(event_sender or {}),
             )
         return loaded, output
 
@@ -257,6 +262,10 @@ class SubSessionRuntime:
         config: AgentLoopConfig,
         registry: ToolRegistry,
         model_factory: Any,
+        on_step: Callable[[LoadedSubSession, AgentStep], Awaitable[None]] | None = None,
+        on_delta: Callable[[LoadedSubSession, dict[str, Any]], Awaitable[None]] | None = None,
+        on_tool_result: Callable[[LoadedSubSession, ChatMessage], Awaitable[None]] | None = None,
+        on_todos_changed: Callable[[LoadedSubSession, list[dict[str, Any]]], Awaitable[None]] | None = None,
     ) -> str:
         loaded = self.ensure_loaded_session(
             parent_session_id=parent_session_id,
@@ -277,12 +286,40 @@ class SubSessionRuntime:
         model_adapter = await model_factory(registry)
         state = AgentLoopState(messages=loaded.session.messages)
         loaded.state = state
+        sent_tool_result_ids: set[str] = {
+            msg.tool_use_id or msg.id or ""
+            for msg in loaded.session.messages
+            if msg.role == "tool_result"
+        }
+        sent_tool_result_ids.discard("")
 
         async def on_messages_changed(messages: list[ChatMessage]) -> None:
             loaded.session.messages = messages
             self._sync_link_activity(loaded)
             self._add_link(config.session_dir, loaded.link)
             save_session(config.session_dir, loaded.session)
+            if on_tool_result is None:
+                return
+            for msg in messages:
+                if msg.role != "tool_result" or msg.tool_name == "TodoWrite":
+                    continue
+                result_id = msg.tool_use_id or msg.id or ""
+                if not result_id or result_id in sent_tool_result_ids:
+                    continue
+                sent_tool_result_ids.add(result_id)
+                await on_tool_result(loaded, msg)
+
+        async def child_on_step(step: AgentStep) -> None:
+            if on_step:
+                await on_step(loaded, step)
+
+        async def child_on_delta(delta: dict[str, Any]) -> None:
+            if on_delta:
+                await on_delta(loaded, delta)
+
+        async def child_on_todos_changed(todos: list[dict[str, Any]]) -> None:
+            if on_todos_changed:
+                await on_todos_changed(loaded, todos)
 
         task = asyncio.create_task(run_agent_loop(
             user_input=message,
@@ -290,7 +327,10 @@ class SubSessionRuntime:
             config=child_config,
             state=state,
             tool_registry=registry,
+            on_step=child_on_step,
+            on_delta=child_on_delta,
             on_messages_changed=on_messages_changed,
+            on_todos_changed=child_on_todos_changed,
         ))
         loaded.task = task
         try:

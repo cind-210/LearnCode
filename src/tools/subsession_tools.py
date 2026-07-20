@@ -199,6 +199,7 @@ async def _run_new_subsession_tool(input: dict, context: ToolContext) -> ToolRes
         registry=sub_registry,
         model_factory=model_factory,
         permissions=child_permissions,
+        event_sender=_subsession_event_sender(context),
     )
     return ToolResult(
         ok=True,
@@ -255,6 +256,7 @@ async def _run_fork_subsession_tool(input: dict, context: ToolContext) -> ToolRe
         registry=sub_registry,
         model_factory=model_factory,
         permissions=child_permissions,
+        event_sender=_subsession_event_sender(context),
     )
     return ToolResult(
         ok=True,
@@ -297,6 +299,7 @@ async def _run_send_message_tool(input: dict, context: ToolContext) -> ToolResul
         config=_loop_config(context),
         registry=_registry_for_subsession(_registry(context), character),
         model_factory=model_factory,
+        **_subsession_event_sender(context),
     )
     ok = not output.startswith("SubSession not found") and not output.startswith("SubSession is already running")
     return ToolResult(ok=ok, output=output)
@@ -323,6 +326,11 @@ def _loop_config(context: ToolContext) -> AgentLoopConfig:
     if isinstance(config, AgentLoopConfig):
         return config
     return AgentLoopConfig(workspace=str(context.get("workspace") or "."))
+
+
+def _subsession_event_sender(context: ToolContext) -> dict[str, Any]:
+    sender = context.get("subsession_event_sender")
+    return sender if isinstance(sender, dict) else {}
 
 
 def _characters(context: ToolContext) -> list[Character]:

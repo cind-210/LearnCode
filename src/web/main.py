@@ -250,10 +250,14 @@ async def websocket_endpoint(ws: WebSocket):
     pending_permissions: dict[str, asyncio.Future] = {}
     send_lock = asyncio.Lock()
     app_state = WebAppState()
+    current_view_session_id = ""
 
     async def send_event(event_type: str, data: Any):
         async with send_lock:
             await ws.send_text(json.dumps({"type": event_type, "data": data}, ensure_ascii=False, default=str))
+
+    def is_viewing(target_session_id: str) -> bool:
+        return bool(target_session_id) and current_view_session_id == target_session_id
 
     await send_event("workspace", {"workspace": APP_WORKSPACE})
     await send_event("characters", _characters_payload())
@@ -307,6 +311,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "title": session.meta.title,
                         "created_from_chat": True,
                     })
+                    current_view_session_id = session.meta.id
                     sessions = list_sessions(SESSION_DIR)
                     await send_event("sessions", [{"id": s.id, "title": s.title, "updated_at": s.updated_at} for s in sessions])
                     state = AgentLoopState(messages=[first_user_message])
@@ -317,6 +322,7 @@ async def websocket_endpoint(ws: WebSocket):
                     save_session(SESSION_DIR, session)
                     state = AgentLoopState(messages=session.messages)
                     user_already_appended = True
+                current_view_session_id = session.meta.id
 
                 if should_auto_name_session:
                     await send_event("session_auto_name_needed", {"id": session.meta.id})
@@ -326,14 +332,16 @@ async def websocket_endpoint(ws: WebSocket):
                 adapter = await _get_model_adapter(tools)
                 runtime = await load_runtime_config()
                 sent_tool_result_ids: set[str] = set()
+                run_session = session
+                run_state = state
 
                 config = AgentLoopConfig(
                     workspace=workspace,
-                    session_id=session.meta.id,
-                    character_name=session.meta.character_name,
+                    session_id=run_session.meta.id,
+                    character_name=run_session.meta.character_name,
                     subsession_runtime=app_state.subsession_runtime,
                     permission_mode=PermissionMode.DEFAULT,
-                    permissions=session.permissions,
+                    permissions=run_session.permissions,
                     max_loaded_subsessions=runtime.max_loaded_subsessions,
                     session_dir=SESSION_DIR,
                 )
@@ -341,7 +349,10 @@ async def websocket_endpoint(ws: WebSocket):
                 async def on_step(step):
                     if run_id != active_run_id:
                         return
+                    if not is_viewing(run_session.meta.id):
+                        return
                     await send_event("step", {
+                        "session_id": run_session.meta.id,
                         "type": step.type,
                         "content": step.content,
                         "kind": getattr(step, "kind", None),
@@ -356,13 +367,15 @@ async def websocket_endpoint(ws: WebSocket):
                 async def on_delta(delta):
                     if run_id != active_run_id:
                         return
-                    await send_event("delta", delta)
+                    if not is_viewing(run_session.meta.id):
+                        return
+                    await send_event("delta", {**delta, "session_id": run_session.meta.id})
 
                 async def on_messages_changed(messages):
-                    if run_id != active_run_id or not session:
+                    if run_id != active_run_id:
                         return
-                    session.messages = messages
-                    save_session(SESSION_DIR, session)
+                    run_session.messages = messages
+                    save_session(SESSION_DIR, run_session)
                     for message in messages:
                         if message.role != "tool_result" or message.tool_name == "TodoWrite":
                             continue
@@ -370,7 +383,10 @@ async def websocket_endpoint(ws: WebSocket):
                         if not result_id or result_id in sent_tool_result_ids:
                             continue
                         sent_tool_result_ids.add(result_id)
+                        if not is_viewing(run_session.meta.id):
+                            continue
                         await send_event("tool_result", {
+                            "session_id": run_session.meta.id,
                             "tool_use_id": message.tool_use_id,
                             "tool_name": message.tool_name,
                             "content": message.content,
@@ -380,12 +396,68 @@ async def websocket_endpoint(ws: WebSocket):
                 async def on_todos_changed(todos):
                     if run_id != active_run_id:
                         return
-                    await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": todos})
+                    if not is_viewing(run_session.meta.id):
+                        return
+                    await send_event("todos_updated", {"session_id": run_session.meta.id, "todos": todos})
 
                 async def on_mcp_servers_changed(servers):
                     if run_id != active_run_id:
                         return
                     await send_event("mcp_servers", servers)
+
+                async def on_subsession_step(child, step):
+                    if not is_viewing(child.session.meta.id):
+                        return
+                    await send_event("step", {
+                        "session_id": child.session.meta.id,
+                        "parent_session_id": child.link.parent_session_id,
+                        "type": step.type,
+                        "content": step.content,
+                        "kind": getattr(step, "kind", None),
+                        "thinking_blocks": [b.__dict__ for b in (step.thinking_blocks or [])],
+                        "calls": [
+                            {"id": c.id, "tool_name": c.tool_name, "input": c.input}
+                            for c in (step.calls or [])
+                        ],
+                        "usage": step.usage.__dict__ if step.usage else None,
+                    })
+
+                async def on_subsession_delta(child, delta):
+                    if not is_viewing(child.session.meta.id):
+                        return
+                    await send_event("delta", {
+                        **delta,
+                        "session_id": child.session.meta.id,
+                        "parent_session_id": child.link.parent_session_id,
+                    })
+
+                async def on_subsession_tool_result(child, message):
+                    if not is_viewing(child.session.meta.id):
+                        return
+                    await send_event("tool_result", {
+                        "session_id": child.session.meta.id,
+                        "parent_session_id": child.link.parent_session_id,
+                        "tool_use_id": message.tool_use_id,
+                        "tool_name": message.tool_name,
+                        "content": message.content,
+                        "is_error": message.is_error,
+                    })
+
+                async def on_subsession_todos_changed(child, todos):
+                    if not is_viewing(child.session.meta.id):
+                        return
+                    await send_event("todos_updated", {
+                        "session_id": child.session.meta.id,
+                        "parent_session_id": child.link.parent_session_id,
+                        "todos": todos,
+                    })
+
+                config.subsession_event_sender = {
+                    "on_step": on_subsession_step,
+                    "on_delta": on_subsession_delta,
+                    "on_tool_result": on_subsession_tool_result,
+                    "on_todos_changed": on_subsession_todos_changed,
+                }
 
                 async def on_permission_request(request: PermissionRequest) -> PermissionResponse:
                     nonlocal permission_counter
@@ -413,7 +485,7 @@ async def websocket_endpoint(ws: WebSocket):
                             user_input=message,
                             model_adapter=adapter,
                             config=config,
-                            state=state,
+                            state=run_state,
                             on_step=on_step,
                             on_delta=on_delta,
                             on_messages_changed=on_messages_changed,
@@ -426,7 +498,7 @@ async def websocket_endpoint(ws: WebSocket):
                         if run_id != active_run_id:
                             return
 
-                        session.messages = result.messages
+                        run_session.messages = result.messages
                         if result.auto_compact_result:
                             retained = [
                                 m for m in result.messages
@@ -434,30 +506,33 @@ async def websocket_endpoint(ws: WebSocket):
                             ]
                             append_compact_boundary(
                                 SESSION_DIR,
-                                session.meta.id,
+                                run_session.meta.id,
                                 result.auto_compact_result.summary.content,
                                 "auto",
                                 result.auto_compact_result.tokens_before,
                                 result.auto_compact_result.tokens_after,
                                 retained,
-                                workspace=session.meta.workspace,
+                                workspace=run_session.meta.workspace,
                             )
-                            session = load_session(SESSION_DIR, session.meta.id) or session
-                            state = AgentLoopState(messages=session.messages)
-                            await send_event("compact", {
-                                "trigger": "auto",
-                                "tokens_before": result.auto_compact_result.tokens_before,
-                                "tokens_after": result.auto_compact_result.tokens_after,
-                            })
+                            refreshed = load_session(SESSION_DIR, run_session.meta.id) or run_session
+                            session = refreshed
+                            state = AgentLoopState(messages=refreshed.messages)
+                            if is_viewing(run_session.meta.id):
+                                await send_event("compact", {
+                                    "trigger": "auto",
+                                    "tokens_before": result.auto_compact_result.tokens_before,
+                                    "tokens_after": result.auto_compact_result.tokens_after,
+                                })
                         else:
-                            save_session(SESSION_DIR, session)
+                            save_session(SESSION_DIR, run_session)
 
                         await send_event("done", {
                             "stop_reason": result.stop_reason,
                             "turn": result.turn,
-                            "session_id": session.meta.id,
+                            "session_id": run_session.meta.id,
                         })
-                        await send_event("todos_updated", {"session_id": session.meta.id, "todos": _session_todos(session)})
+                        if is_viewing(run_session.meta.id):
+                            await send_event("todos_updated", {"session_id": run_session.meta.id, "todos": _session_todos(run_session)})
                     except asyncio.CancelledError:
                         if run_id != active_run_id:
                             return
@@ -465,12 +540,13 @@ async def websocket_endpoint(ws: WebSocket):
                             if not future.done():
                                 future.cancel()
                         pending_permissions.clear()
-                        if session and state:
-                            _close_open_tool_calls(state.messages)
-                            session.messages = state.messages
-                            save_session(SESSION_DIR, session)
-                        await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": _session_todos(session)})
-                        await send_event("stopped", {"session_id": session.meta.id if session else None})
+                        if run_state:
+                            _close_open_tool_calls(run_state.messages)
+                            run_session.messages = run_state.messages
+                            save_session(SESSION_DIR, run_session)
+                        if is_viewing(run_session.meta.id):
+                            await send_event("todos_updated", {"session_id": run_session.meta.id, "todos": _session_todos(run_session)})
+                            await send_event("stopped", {"session_id": run_session.meta.id})
                     except Exception as e:
                         if run_id != active_run_id:
                             return
@@ -478,11 +554,12 @@ async def websocket_endpoint(ws: WebSocket):
                             if not future.done():
                                 future.cancel()
                         pending_permissions.clear()
-                        if session and state:
-                            _close_open_tool_calls(state.messages)
-                            session.messages = state.messages
-                            save_session(SESSION_DIR, session)
-                        await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": _session_todos(session)})
+                        if run_state:
+                            _close_open_tool_calls(run_state.messages)
+                            run_session.messages = run_state.messages
+                            save_session(SESSION_DIR, run_session)
+                        if is_viewing(run_session.meta.id):
+                            await send_event("todos_updated", {"session_id": run_session.meta.id, "todos": _session_todos(run_session)})
                         _log_error(e)
                         await send_event("error", _error_payload(e))
                     finally:
@@ -635,6 +712,7 @@ async def websocket_endpoint(ws: WebSocket):
                     session = load_session(SESSION_DIR, sid)
                     transcript = load_transcript(SESSION_DIR, sid)
                     if session and transcript is not None:
+                        current_view_session_id = session.meta.id
                         state = AgentLoopState(messages=session.messages)
                         await send_event("session_loaded", {
                             "id": session.meta.id,
@@ -680,6 +758,7 @@ async def websocket_endpoint(ws: WebSocket):
                         parent_session_id=parent_id,
                     )
                     if child and transcript is not None:
+                        current_view_session_id = child.meta.id
                         await send_event("session_loaded", {
                             "id": child.meta.id,
                             "title": child.meta.title,
@@ -705,6 +784,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif action == "new_session":
                 session = create_session(SESSION_DIR, workspace=APP_WORKSPACE, title="New Session")
+                current_view_session_id = session.meta.id
                 state = AgentLoopState(messages=[])
                 await send_event("session_created", {"id": session.meta.id, "title": session.meta.title})
                 await send_event("todos_updated", {"session_id": session.meta.id, "todos": []})

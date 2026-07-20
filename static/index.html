@@ -773,6 +773,7 @@
     function handleEvent(type, data) {
       switch (type) {
         case 'step':
+          if (!isCurrentViewEvent(data)) break;
           if (!streamedThinkingThisStep && data.thinking_blocks && data.thinking_blocks.length) {
             appendLoopEvent('Thinking', formatThinkingBlocks(data.thinking_blocks), 'thinking');
           }
@@ -802,9 +803,11 @@
           resetStreamRenderState();
           break;
         case 'delta':
+          if (!isCurrentViewEvent(data)) break;
           handleDelta(data);
           break;
         case 'tool_result':
+          if (!isCurrentViewEvent(data)) break;
           attachToolResult(data.tool_use_id, (data.is_error ? '[Error] ' : '') + (data.content || ''));
           break;
         case 'done':
@@ -815,7 +818,7 @@
           pendingPermissionRules.clear();
           collapseLoopContainer();
           updateSendButton();
-          if (data.session_id) {
+          if (isCurrentViewEvent(data) && data.session_id) {
             sessionId = data.session_id;
             listSessions();
           }
@@ -829,7 +832,7 @@
           pendingPermissionRules.clear();
           collapseLoopContainer();
           updateSendButton();
-          if (data && data.session_id) {
+          if (isCurrentViewEvent(data) && data.session_id) {
             sessionId = data.session_id;
             listSessions();
           }
@@ -1233,6 +1236,10 @@
         return type + ': ' + message;
       }
       return 'Error: ' + (data || 'Unknown error');
+    }
+
+    function isCurrentViewEvent(data) {
+      return !data || !data.session_id || data.session_id === viewSessionId;
     }
 
     function onSendButtonClick() {
