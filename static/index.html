@@ -922,13 +922,7 @@
           readOnlySession = false;
           viewSessionId = data.id;
           viewParentSessionId = null;
-          if (data.naming) {
-            namingSessions.add(data.id);
-          }
           upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
-          if (data.created_from_chat && data.naming) {
-            autoNameSession(data.id);
-          }
           if (!data.created_from_chat) {
             document.getElementById('messages').innerHTML = '';
             currentLoopContainer = null;
@@ -940,10 +934,8 @@
           }
           listSessions();
           break;
-        case 'session_naming_started':
+        case 'session_auto_name_needed':
           if (data && data.id) {
-            namingSessions.add(data.id);
-            upsertSessionListItem({ id: data.id, title: data.title || 'New Session', updated_at: Date.now() });
             autoNameSession(data.id);
           }
           break;
