@@ -1118,8 +1118,6 @@
       item.appendChild(eventBody);
       group.body.appendChild(item);
       group.body.scrollTop = group.body.scrollHeight;
-      const messages = document.getElementById('messages');
-      messages.scrollTop = messages.scrollHeight;
       return item;
     }
 
@@ -1181,8 +1179,6 @@
       currentStreamEvent.content += data.type === 'thinking' ? (data.thinking || '') : (data.text || '');
       currentStreamEvent.body.textContent = currentStreamEvent.content;
       currentStreamEvent.group.body.scrollTop = currentStreamEvent.group.body.scrollHeight;
-      const messages = document.getElementById('messages');
-      messages.scrollTop = messages.scrollHeight;
     }
 
     function removeCurrentAssistantStreamEvent() {
