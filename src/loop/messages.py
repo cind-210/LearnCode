@@ -115,6 +115,10 @@ class ChatMessage:
     def todo_reminder(cls, content: str, **kwargs: Any) -> ChatMessage:
         return cls(role="todo_reminder", content=content, **kwargs)
 
+    @classmethod
+    def loop_end(cls, content: str = "", **kwargs: Any) -> ChatMessage:
+        return cls(role="loop_end", content=content, **kwargs)
+
     # Convenience aliases
     @classmethod
     def tool_call(cls, tool_use_id: str, tool_name: str, input: Any, **kwargs: Any) -> ChatMessage:

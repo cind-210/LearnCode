@@ -891,7 +891,6 @@
               } else if (m.role === 'assistant') {
                 if (m.content) addMessage('assistant', m.content);
               } else if (m.role === 'assistant_final') {
-                collapseLoopContainer();
                 if (m.content) addMessage('assistant', m.content);
               } else if (m.role === 'assistant_progress') {
                 if (m.content) appendLoopEvent('Assistant', m.content, 'assistant');
@@ -907,6 +906,8 @@
                 appendLoopEvent('Thinking', formatThinkingBlocks(m.blocks || []), 'thinking');
               } else if (m.role === 'todo_reminder') {
                 // hidden system reminder
+              } else if (m.role === 'loop_end') {
+                collapseLoopContainer();
               } else if (m.role === 'compact_boundary') {
                 addMessage('compact', m.content || 'Context compacted');
               } else if (m.role === 'system') {

@@ -88,6 +88,10 @@ def _close_open_tool_calls(messages: list[ChatMessage]) -> None:
         ))
 
 
+def _append_loop_end(messages: list[ChatMessage], reason: str) -> None:
+    messages.append(ChatMessage.loop_end(reason))
+
+
 def _session_todos(session: Optional[Session]) -> list[dict[str, Any]]:
     return extract_todos_from_messages(session.messages) if session else []
 
@@ -498,6 +502,7 @@ async def websocket_endpoint(ws: WebSocket):
                         if run_id != active_run_id:
                             return
 
+                        _append_loop_end(result.messages, result.stop_reason or "done")
                         run_session.messages = result.messages
                         if result.auto_compact_result:
                             retained = [
@@ -542,6 +547,7 @@ async def websocket_endpoint(ws: WebSocket):
                         pending_permissions.clear()
                         if run_state:
                             _close_open_tool_calls(run_state.messages)
+                            _append_loop_end(run_state.messages, "stopped")
                             run_session.messages = run_state.messages
                             save_session(SESSION_DIR, run_session)
                         if is_viewing(run_session.meta.id):
@@ -556,6 +562,7 @@ async def websocket_endpoint(ws: WebSocket):
                         pending_permissions.clear()
                         if run_state:
                             _close_open_tool_calls(run_state.messages)
+                            _append_loop_end(run_state.messages, "error")
                             run_session.messages = run_state.messages
                             save_session(SESSION_DIR, run_session)
                         if is_viewing(run_session.meta.id):
@@ -619,6 +626,7 @@ async def websocket_endpoint(ws: WebSocket):
                     current_task.cancel()
                     if session and state:
                         _close_open_tool_calls(state.messages)
+                        _append_loop_end(state.messages, "stopped")
                         session.messages = state.messages
                         save_session(SESSION_DIR, session)
                     await send_event("todos_updated", {"session_id": session.meta.id if session else None, "todos": _session_todos(session)})

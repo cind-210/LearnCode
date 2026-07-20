@@ -337,6 +337,7 @@ class SubSessionRuntime:
             result = await task
         except asyncio.CancelledError:
             self._close_open_tool_calls(state.messages)
+            _append_loop_end(state.messages, "stopped")
             loaded.session.messages = state.messages
             save_session(config.session_dir, loaded.session)
             loaded.status = "idle"
@@ -344,6 +345,7 @@ class SubSessionRuntime:
             loaded.state = None
             raise
 
+        _append_loop_end(result.messages, result.stop_reason or "done")
         loaded.session.messages = result.messages
         loaded.session.permissions = child_config.permissions or loaded.session.permissions
         self._sync_link_activity(loaded)
@@ -491,6 +493,10 @@ def _last_assistant_content(messages: list[ChatMessage]) -> str:
         if message.role in ("assistant", "assistant_final", "assistant_progress") and message.content:
             return message.content
     return ""
+
+
+def _append_loop_end(messages: list[ChatMessage], reason: str) -> None:
+    messages.append(ChatMessage.loop_end(reason))
 
 
 def _last_message_timestamp(messages: list[ChatMessage]) -> int:

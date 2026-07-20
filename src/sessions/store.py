@@ -216,6 +216,7 @@ def _role_to_event_type(role: str) -> str:
         "snip_boundary": "snip_boundary",
         "microcompact_boundary": "microcompact_boundary",
         "todo_reminder": "todo_reminder",
+        "loop_end": "loop_end",
     }.get(role, "user")
 
 
