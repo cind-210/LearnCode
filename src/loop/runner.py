@@ -502,6 +502,8 @@ async def run_agent_loop(
 
     if not user_already_appended:
         state.messages.append(ChatMessage.user(user_input, timestamp=int(time.time() * 1000)))
+        if on_messages_changed:
+            await on_messages_changed(state.messages)
     state.turn += 1
 
     runtime_config = state._runtime_config or await load_runtime_config()
